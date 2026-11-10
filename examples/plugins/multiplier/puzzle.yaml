@@ -1,0 +1,28 @@
+schema_version: 1
+
+id: square
+name: Square (plugin example)
+description: |
+  Output x * x for every input x. Requires the "multiplier" cell type from
+  the example plugin; multiplication wraps at 32 bits.
+
+cells:
+  - id: in
+    type: input
+    ports: [P0]
+    config: {stream: x}
+  - id: mul
+    type: multiplier
+    program_memory: 8
+  - id: out
+    type: output
+    ports: [P0]
+    config: {stream: squares}
+
+tests:
+  - name: small
+    inputs: {x: [0, 1, 2, -3, 12]}
+    outputs: {squares: [0, 1, 4, 9, 144]}
+  - name: wraps
+    inputs: {x: [65536, 65537]}
+    outputs: {squares: [0, 131073]}

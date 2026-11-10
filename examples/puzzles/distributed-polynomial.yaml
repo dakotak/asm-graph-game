@@ -1,0 +1,54 @@
+schema_version: 1
+
+id: distributed-polynomial
+name: Distributed Polynomial
+description: |
+  For every input x, output 4x + 3.
+
+  A single processor would need 12 bytes of program memory, but every
+  processor here has only 8. Split the computation across cells.
+
+cells:
+  - id: x
+    type: input
+    ports: [P0]
+    config: {stream: x}
+
+  - id: alpha
+    type: standard
+    program_memory: 8
+
+  - id: beta
+    type: standard
+    program_memory: 8
+
+  - id: gamma
+    type: standard
+    program_memory: 8
+
+  - id: y
+    type: output
+    ports: [P0]
+    config: {stream: y}
+
+limits:
+  max_ticks: 5000
+
+tests:
+  - name: small
+    inputs:
+      x: [0, 1, 2, 10]
+    outputs:
+      y: [3, 7, 11, 43]
+
+  - name: negative
+    inputs:
+      x: [-1, -3, -100]
+    outputs:
+      y: [-1, -9, -397]
+
+  - name: overflow
+    inputs:
+      x: [536870912, 1073741823]
+    outputs:
+      y: [-2147483645, -1]

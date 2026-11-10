@@ -1,0 +1,20 @@
+schema_version: 1
+puzzle: reverse-sequences
+
+connections:
+  - from: {cell: in, port: P0}
+    to: {cell: stack, port: P0}
+  - from: {cell: stack, port: P1}
+    to: {cell: out, port: P0}
+
+programs:
+  # The helper standard processor is not needed and stays unconnected.
+  stack: |
+    READ:  MOV P0, ACC
+           JEZ FLUSH
+           PUSH ACC
+           JMP READ
+    FLUSH: JSE DONE
+           POP P1
+           JMP FLUSH
+    DONE:  MOV ACC, P1    # ACC is still 0: emit the terminator

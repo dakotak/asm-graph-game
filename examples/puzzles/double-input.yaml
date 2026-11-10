@@ -1,0 +1,44 @@
+schema_version: 1
+
+id: double-input
+name: Double the Input
+description: |
+  Read each value from the input stream and write twice its value to the
+  output. Arithmetic wraps at 32 bits.
+
+cells:
+  - id: input
+    type: input
+    ports: [P0]
+    config:
+      stream: numbers
+
+  - id: processor
+    type: standard
+    program_memory: 32
+    ports: [P0, P1, P2, P3]
+
+  - id: output
+    type: output
+    ports: [P0]
+    config:
+      stream: result
+
+tests:
+  - name: positive
+    inputs:
+      numbers: [1, 2, 3, 4]
+    outputs:
+      result: [2, 4, 6, 8]
+
+  - name: negative
+    inputs:
+      numbers: [-5, -2, 0, 7]
+    outputs:
+      result: [-10, -4, 0, 14]
+
+  - name: boundaries
+    inputs:
+      numbers: [0, 2147483647, -2147483648]
+    outputs:
+      result: [0, -2, 0]

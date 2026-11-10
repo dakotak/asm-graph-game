@@ -1,0 +1,17 @@
+# Deliberately broken: the whole polynomial does not fit in one 8-byte cell.
+schema_version: 1
+puzzle: distributed-polynomial
+
+connections:
+  - from: {cell: x, port: P0}
+    to: {cell: alpha, port: P0}
+  - from: {cell: alpha, port: P1}
+    to: {cell: y, port: P0}
+
+programs:
+  alpha: |
+    MOV P0, ACC
+    ADD ACC
+    ADD ACC
+    ADD 3
+    MOV ACC, P1

@@ -1,0 +1,14 @@
+schema_version: 1
+puzzle: square
+
+connections:
+  - from: {cell: in, port: P0}
+    to: {cell: mul, port: P0}
+  - from: {cell: mul, port: P1}
+    to: {cell: out, port: P0}
+
+programs:
+  mul: |
+    MOV P0, ACC
+    MUL ACC        # one 2-byte instruction instead of a multiplication loop
+    MOV ACC, P1

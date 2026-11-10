@@ -1,0 +1,62 @@
+schema_version: 1
+
+id: combine-streams
+name: Combine Streams
+description: |
+  Two independent input streams deliver values in lockstep. For each pair
+  (a, b) write a - b to the "difference" output and a + b to the "sum"
+  output.
+
+cells:
+  - id: a
+    type: input
+    ports: [P0]
+    config: {stream: a}
+
+  - id: b
+    type: input
+    ports: [P0]
+    config: {stream: b}
+
+  - id: left
+    type: standard
+    program_memory: 16
+
+  - id: right
+    type: standard
+    program_memory: 16
+
+  - id: sum
+    type: output
+    ports: [P0]
+    config: {stream: sum}
+
+  - id: difference
+    type: output
+    ports: [P0]
+    config: {stream: difference}
+
+tests:
+  - name: small
+    inputs:
+      a: [1, 10, 7]
+      b: [2, 3, -7]
+    outputs:
+      sum: [3, 13, 0]
+      difference: [-1, 7, 14]
+
+  - name: wraparound
+    inputs:
+      a: [2147483647, -2147483648]
+      b: [1, 1]
+    outputs:
+      sum: [-2147483648, -2147483647]
+      difference: [2147483646, 2147483647]
+
+  - name: zeros
+    inputs:
+      a: [0, 0]
+      b: [0, 5]
+    outputs:
+      sum: [0, 5]
+      difference: [0, -5]

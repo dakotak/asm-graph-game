@@ -1,0 +1,41 @@
+schema_version: 1
+
+id: filter-positive
+name: Filter Positive
+description: |
+  Copy only the strictly positive values from the input to the output,
+  preserving their order. Zero and negative values are discarded.
+
+cells:
+  - id: in
+    type: input
+    ports: [P0]
+    config: {stream: values}
+
+  - id: filter
+    type: standard
+    program_memory: 16
+
+  - id: out
+    type: output
+    ports: [P0]
+    config: {stream: positives}
+
+tests:
+  - name: mixed
+    inputs:
+      values: [3, -1, 0, 5, -7, 2]
+    outputs:
+      positives: [3, 5, 2]
+
+  - name: extremes
+    inputs:
+      values: [-2147483648, 2147483647, 1, -1, 0, 0, 42]
+    outputs:
+      positives: [2147483647, 1, 42]
+
+  - name: all-positive
+    inputs:
+      values: [9, 8, 7]
+    outputs:
+      positives: [9, 8, 7]

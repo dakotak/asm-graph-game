@@ -1,0 +1,33 @@
+schema_version: 1
+puzzle: combine-streams
+
+# "left" reads a, sends a copy to "right", then adds b (sent back by
+# "right") and emits a + b. "right" stores b in BAK, computes a - b, emits
+# it, and only then sends b to "left". Sending in this order avoids the
+# deadlock where both processors write to each other at the same time.
+connections:
+  - from: {cell: a, port: P0}
+    to: {cell: left, port: P0}
+  - from: {cell: b, port: P0}
+    to: {cell: right, port: P0}
+  - from: {cell: left, port: P1}
+    to: {cell: right, port: P1}
+  - from: {cell: left, port: P2}
+    to: {cell: sum, port: P0}
+  - from: {cell: right, port: P2}
+    to: {cell: difference, port: P0}
+
+programs:
+  left: |
+    MOV P0, ACC   # a
+    MOV ACC, P1   # a -> right
+    ADD P1        # + b from right
+    MOV ACC, P2   # a + b
+  right: |
+    MOV P0, ACC   # b
+    SAV           # BAK = b
+    NEG
+    ADD P1        # a - b (a from left)
+    MOV ACC, P2
+    SWP           # ACC = b
+    MOV ACC, P1   # b -> left

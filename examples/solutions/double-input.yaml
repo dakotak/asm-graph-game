@@ -1,0 +1,30 @@
+schema_version: 1
+puzzle: double-input
+
+connections:
+  - from:
+      cell: input
+      port: P0
+    to:
+      cell: processor
+      port: P0
+
+  - from:
+      cell: processor
+      port: P1
+    to:
+      cell: output
+      port: P0
+
+programs:
+  processor: |
+    MOV P0, ACC
+    ADD ACC
+    MOV ACC, P1
+    JMP 0
+
+metadata:
+  layout:
+    input: {x: 0, y: 0}
+    processor: {x: 200, y: 0}
+    output: {x: 400, y: 0}

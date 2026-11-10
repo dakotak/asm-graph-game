@@ -1,0 +1,20 @@
+# Deliberately broken: demonstrates topology and assembly diagnostics.
+schema_version: 1
+puzzle: double-input
+
+connections:
+  - from: {cell: input, port: P0}
+    to: {cell: processor, port: P0}
+  - from: {cell: input, port: P2}        # P2 is disabled on the input cell
+    to: {cell: processor, port: P2}
+  - from: {cell: processor, port: P0}    # P0 is already connected
+    to: {cell: output, port: P0}
+  - from: {cell: processor, port: P5}    # not a port
+    to: {cell: output, port: P0}
+
+programs:
+  processor: |
+    MOV P0, ACC
+    MUL 2              # not an instruction on the standard processor
+    MOV ACC, P9        # P9 is not a port
+    JMP LOOP           # undefined label

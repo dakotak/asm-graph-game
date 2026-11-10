@@ -1,0 +1,50 @@
+schema_version: 1
+
+id: reverse-sequences
+name: Reverse Sequences
+description: |
+  The input is a series of sequences, each terminated by 0. Output every
+  sequence in reverse order, followed by its 0 terminator.
+
+  The standard processor has nowhere to store a sequence. The stack cell
+  can hold up to eight values.
+
+cells:
+  - id: in
+    type: input
+    ports: [P0]
+    config: {stream: sequences}
+
+  - id: helper
+    type: standard
+    program_memory: 12
+
+  - id: stack
+    type: stack
+    program_memory: 24
+    config:
+      stack_size: 8
+
+  - id: out
+    type: output
+    ports: [P0]
+    config: {stream: reversed}
+
+tests:
+  - name: basic
+    inputs:
+      sequences: [1, 2, 3, 0, 4, 5, 0]
+    outputs:
+      reversed: [3, 2, 1, 0, 5, 4, 0]
+
+  - name: single-and-empty
+    inputs:
+      sequences: [7, 0, 0, 9, 0]
+    outputs:
+      reversed: [7, 0, 0, 9, 0]
+
+  - name: full-stack
+    inputs:
+      sequences: [1, 2, 3, 4, 5, 6, 7, 8, 0, -1, -2, 0]
+    outputs:
+      reversed: [8, 7, 6, 5, 4, 3, 2, 1, 0, -2, -1, 0]

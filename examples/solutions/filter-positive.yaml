@@ -1,0 +1,16 @@
+schema_version: 1
+puzzle: filter-positive
+
+connections:
+  - from: {cell: in, port: P0}
+    to: {cell: filter, port: P2}
+  - from: {cell: filter, port: P3}
+    to: {cell: out, port: P0}
+
+programs:
+  filter: |
+    # 10 bytes: read, test, conditionally forward.
+    TOP:  MOV P2, ACC
+          JGZ SEND
+          JMP TOP
+    SEND: MOV ACC, P3

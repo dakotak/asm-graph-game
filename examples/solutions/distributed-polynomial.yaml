@@ -1,0 +1,27 @@
+schema_version: 1
+puzzle: distributed-polynomial
+
+# x -> alpha (2x) -> beta (2x) -> gamma (+3) -> y. Each program is 8 bytes.
+connections:
+  - from: {cell: x, port: P0}
+    to: {cell: alpha, port: P0}
+  - from: {cell: alpha, port: P1}
+    to: {cell: beta, port: P0}
+  - from: {cell: beta, port: P1}
+    to: {cell: gamma, port: P0}
+  - from: {cell: gamma, port: P1}
+    to: {cell: y, port: P0}
+
+programs:
+  alpha: |
+    MOV P0, ACC
+    ADD ACC
+    MOV ACC, P1
+  beta: |
+    MOV P0, ACC
+    ADD ACC
+    MOV ACC, P1
+  gamma: |
+    MOV P0, ACC
+    ADD 3
+    MOV ACC, P1
