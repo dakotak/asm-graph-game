@@ -4,12 +4,11 @@
 import type { CellSnapshot, Connection } from '../../api/types'
 import { connectionId, PHYSICAL_PORTS } from '../../lib/connections'
 
-export type PortVisual = 'disabled' | 'free' | 'connected' | 'waiting' | 'active'
+export type PortVisual = 'free' | 'connected' | 'waiting' | 'active'
 
 export interface PortInfo {
   port: string
   visual: PortVisual
-  enabled: boolean
   peer?: string // "cell.port"
   connection?: string // connection id
 }
@@ -22,17 +21,18 @@ export function portsOf(
   activeConnections: Set<string>,
 ): PortInfo[] {
   const waiting = waitingPorts(snap)
-  return PHYSICAL_PORTS.map((port) => {
+  // Ports the puzzle disables are not part of the cell at all, so they are
+  // not shown (the inspector still lists them).
+  return PHYSICAL_PORTS.filter((port) => enabled.has(port)).map((port) => {
     const c = connections.find((x) => (x.from.cell === cellId && x.from.port === port) || (x.to.cell === cellId && x.to.port === port))
     const peer = c ? (c.from.cell === cellId && c.from.port === port ? c.to : c.from) : undefined
     const id = c ? connectionId(c) : undefined
     let visual: PortVisual = 'free'
-    if (!enabled.has(port)) visual = 'disabled'
-    else if (id && activeConnections.has(id)) visual = 'active'
+    if (id && activeConnections.has(id)) visual = 'active'
     else if (waiting.has(port) && (c || waiting.has('*unconnected'))) visual = 'waiting'
     else if (c) visual = 'connected'
     else if (waiting.has(port)) visual = 'waiting'
-    return { port, visual, enabled: enabled.has(port), peer: peer ? `${peer.cell}.${peer.port}` : undefined, connection: id }
+    return { port, visual, peer: peer ? `${peer.cell}.${peer.port}` : undefined, connection: id }
   })
 }
 

@@ -2,15 +2,44 @@ import clsx from 'clsx'
 import { memo, useMemo } from 'react'
 import { Handle, Position, type NodeProps } from '@xyflow/react'
 import { useShallow } from 'zustand/react/shallow'
-import type { CellSnapshot, CellTypeInfo } from '../../api/types'
+import type { CellSnapshot, StateField } from '../../api/types'
 import { enabledPorts } from '../../lib/connections'
 import { NODE_WIDTH } from '../../lib/layout'
 import { useSim } from '../../state/sim'
-import { cellStream, cellType, useWorkspace } from '../../state/workspace'
+import { cellStream, cellType, streamRole, useWorkspace } from '../../state/workspace'
 import { formatValue } from '../ui'
 import { ACTIVITY_LABEL, cellActivity, portsOf, type PortInfo } from './portState'
 
 const PORT_POSITION: Record<string, Position> = { P0: Position.Left, P1: Position.Right, P2: Position.Top, P3: Position.Bottom }
+
+/**
+ * Port labels sit outside the node, beside the handle and off to one side of
+ * the wire that leaves it, so they never overlap the border, the node's
+ * content, or the connection itself.
+ */
+const LABEL_POSITION: Record<Position, string> = {
+  [Position.Left]: 'right-full bottom-full mr-0.5 mb-0.5',
+  [Position.Right]: 'left-full bottom-full ml-0.5 mb-0.5',
+  [Position.Top]: 'left-full bottom-full ml-0.5 mb-0.5',
+  [Position.Bottom]: 'left-full top-full ml-0.5 mt-0.5',
+}
+
+type Role = 'input' | 'output' | undefined
+
+const ROLE_STYLE = {
+  input: { label: 'INPUT', glyph: '▶', border: 'border-in/70', chip: 'bg-in/15 text-in', edge: 'border-l-4 border-l-in' },
+  output: { label: 'OUTPUT', glyph: '◀', border: 'border-out/70', chip: 'bg-out/15 text-out', edge: 'border-r-4 border-r-out' },
+} as const
+
+/**
+ * Data flows left to right in the auto layout, so a stream cell with a
+ * single port puts it on the side facing the processors: inputs on the
+ * right, outputs on the left. Everything else uses the fixed P0–P3 sides.
+ */
+function portPosition(port: string, role: Role, portCount: number): Position {
+  if (role && portCount === 1) return role === 'input' ? Position.Right : Position.Left
+  return PORT_POSITION[port]
+}
 
 export interface CellNodeData extends Record<string, unknown> {
   cellId: string
@@ -20,6 +49,7 @@ function CellNodeImpl({ data, selected }: NodeProps & { data: CellNodeData }) {
   const id = data.cellId
   const def = useWorkspace((s) => s.puzzleDoc?.puzzle.cells.find((c) => c.id === id))
   const type = useWorkspace((s) => (def ? cellType(s.catalog, def.type) : undefined))
+  const tests = useWorkspace((s) => s.puzzleDoc?.puzzle.tests)
   const connections = useWorkspace(useShallow((s) => s.solution?.connections.filter((c) => c.from.cell === id || c.to.cell === id) ?? []))
   const snap = useSim((s) => s.view.cells[id])
   const started = useSim((s) => s.started)
@@ -39,25 +69,31 @@ function CellNodeImpl({ data, selected }: NodeProps & { data: CellNodeData }) {
   if (!def) return null
   const activity = cellActivity(snap, started)
   const act = ACTIVITY_LABEL[activity]
+  const role: Role = type?.programmable ? undefined : streamRole(def, tests)
+  const rs = role ? ROLE_STYLE[role] : undefined
   return (
     <div
       className={clsx(
-        'rounded-sm border bg-panel font-mono text-[11px] shadow-sm',
-        selected ? 'border-accent ring-1 ring-accent' : 'border-line-strong',
+        'border bg-panel font-mono text-[11px] shadow-sm',
+        rs ? ['rounded-md', rs.edge] : 'rounded-sm',
+        selected ? 'border-accent ring-1 ring-accent' : (rs?.border ?? 'border-line-strong'),
         activity === 'blocked' && !selected && 'border-warn/70',
         activity === 'error' && 'border-bad',
       )}
       style={{ width: NODE_WIDTH }}
       data-testid={`cell-${id}`}
       data-activity={activity}
+      data-role={role}
     >
       <div className="flex items-center gap-2 border-b border-line bg-panel-2 px-2 py-1">
+        {rs && role === 'input' && <RoleChip role={role} />}
         <span className="truncate font-semibold text-fg">{id}</span>
-        <span className="ml-auto text-[9px] tracking-widest text-fg-muted uppercase">{def.type}</span>
+        {rs && role === 'output' && <RoleChip role={role} />}
+        {!rs && <span className="ml-auto text-[9px] tracking-widest text-fg-muted uppercase">{def.type}</span>}
       </div>
       <div className="space-y-1 px-2 py-1.5">
         {type?.programmable ? (
-          <ProcessorBody id={id} snap={snap} started={started} memory={def.program_memory ?? 0} />
+          <ProcessorBody id={id} snap={snap} started={started} memory={def.program_memory ?? 0} fields={type.state} />
         ) : (
           <StreamBody id={id} snap={snap} started={started} />
         )}
@@ -68,56 +104,74 @@ function CellNodeImpl({ data, selected }: NodeProps & { data: CellNodeData }) {
         {snap?.blocked && snap.request && <span className="ml-1 truncate text-fg-muted">{snap.request}</span>}
       </div>
       {ports.map((p) => (
-        <PortHandle key={p.port} info={p} type={type} />
+        <PortHandle key={p.port} info={p} position={portPosition(p.port, role, ports.length)} role={role} />
       ))}
     </div>
   )
 }
 
-function PortHandle({ info }: { info: PortInfo; type?: CellTypeInfo }) {
-  const pos = PORT_POSITION[info.port]
-  const vertical = pos === Position.Top || pos === Position.Bottom
+function RoleChip({ role }: { role: 'input' | 'output' }) {
+  const rs = ROLE_STYLE[role]
+  return (
+    <span
+      className={clsx('shrink-0 rounded-sm px-1 text-[9px] font-semibold tracking-widest', rs.chip, role === 'output' && 'ml-auto')}
+      title={role === 'input' ? 'Input: sends the test input stream into the graph' : 'Output: collects values and checks them against the expected stream'}
+    >
+      {role === 'input' ? `${rs.label} ${rs.glyph}` : `${rs.glyph} ${rs.label}`}
+    </span>
+  )
+}
+
+function PortHandle({ info, position: pos, role }: { info: PortInfo; position: Position; role: Role }) {
   const styles: Record<PortInfo['visual'], string> = {
-    disabled: 'border-dashed !border-fg-faint !bg-transparent opacity-50',
-    free: '!border-wire !bg-bg',
+    free: role === 'input' ? '!border-in !bg-bg' : role === 'output' ? '!border-out !bg-bg' : '!border-wire !bg-bg',
     connected: '!border-wire !bg-wire',
     waiting: '!border-warn !bg-warn/40',
     active: '!border-accent !bg-accent',
   }
-  const title = `${info.port}: ${
-    info.visual === 'disabled' ? 'disabled by the puzzle' : info.peer ? `connected to ${info.peer}` : 'available — drag to connect'
-  }${info.visual === 'waiting' ? ' (waiting)' : info.visual === 'active' ? ' (transferring)' : ''}`
+  const title = `${info.port}: ${info.peer ? `connected to ${info.peer}` : 'available — drag to connect'}${info.visual === 'waiting' ? ' (waiting)' : info.visual === 'active' ? ' (transferring)' : ''}`
   return (
     <Handle
       id={info.port}
       type="source"
       position={pos}
-      isConnectable={info.enabled && info.visual !== 'connected' && !info.peer}
+      isConnectable={!info.peer}
       className={clsx('!border-2', styles[info.visual])}
       title={title}
       aria-label={title}
       data-port={info.port}
       data-visual={info.visual}
     >
-      <span
-        className={clsx(
-          'pointer-events-none absolute font-mono text-[9px] text-fg-muted',
-          vertical ? 'left-4 top-1/2 -translate-y-1/2' : 'top-3.5 left-1/2 -translate-x-1/2',
-        )}
-      >
+      <span className={clsx('pointer-events-none absolute rounded-sm bg-bg/80 px-0.5 font-mono text-[10px] leading-none text-fg-muted', LABEL_POSITION[pos])}>
         {info.port}
-        {info.visual === 'disabled' ? '×' : ''}
       </span>
     </Handle>
   )
 }
 
-function ProcessorBody({ id, snap, started, memory }: { id: string; snap?: CellSnapshot; started: boolean; memory: number }) {
+/**
+ * Rows to show for a processor's state: the fields its type declares (so
+ * ACC/BAK are visible before a run, at their initial value 0), followed by
+ * anything else the snapshot reports.
+ */
+function stateRows(fields: StateField[] | undefined, state: Record<string, unknown> | undefined) {
+  const declared = fields ?? []
+  const rows = declared.map((f) => ({ name: f.name, kind: f.kind, summary: f.summary, value: state?.[f.name] }))
+  for (const [name, value] of Object.entries(state ?? {})) {
+    if (!declared.some((f) => f.name === name)) rows.push({ name, kind: Array.isArray(value) ? 'list' : 'word', summary: '', value })
+  }
+  return rows
+}
+
+function ProcessorBody({ id, snap, started, memory, fields }: { id: string; snap?: CellSnapshot; started: boolean; memory: number; fields?: StateField[] }) {
   const bytes = useWorkspace((s) => s.assemble[id]?.bytes ?? s.compile.programs[id]?.bytes)
   const hasErrors = useWorkspace((s) => (s.assemble[id] ? !s.assemble[id].ok : false))
   const pct = bytes !== undefined && memory > 0 ? Math.min(100, (bytes / memory) * 100) : 0
-  const scalars = snap ? Object.entries(snap.state).filter(([, v]) => typeof v === 'number') : []
-  const lists = snap ? Object.entries(snap.state).filter(([, v]) => Array.isArray(v)) : []
+  // Before a run there is no snapshot: show declared fields at their initial values, dimmed.
+  const live = started && snap ? snap.state : undefined
+  const rows = stateRows(fields, live)
+  const scalars = rows.filter((r) => r.kind === 'word' && (live === undefined || typeof r.value === 'number'))
+  const lists = rows.filter((r) => r.kind === 'list')
   return (
     <>
       <div className="flex gap-2 text-fg-muted">
@@ -128,25 +182,24 @@ function ProcessorBody({ id, snap, started, memory }: { id: string; snap?: CellS
         </span>
       </div>
       <div className="flex flex-wrap gap-x-3 gap-y-0.5">
-        {started && scalars.length > 0 ? (
-          scalars.map(([k, v]) => (
-            <span key={k} className="text-fg-muted">
-              {k} <span className="text-fg">{formatValue(v)}</span>
+        {scalars.length > 0 ? (
+          scalars.map((r) => (
+            <span key={r.name} className="text-fg-muted" title={r.summary || undefined} data-register={r.name}>
+              {r.name} <span className={live ? 'text-fg' : 'text-fg-faint'}>{live ? formatValue(r.value) : '0'}</span>
             </span>
           ))
         ) : (
-          <span className="text-fg-faint">{started ? 'no registers' : 'not running'}</span>
+          <span className="text-fg-faint">no registers</span>
         )}
       </div>
-      {started &&
-        lists.map(([k, v]) => {
-          const arr = v as unknown[]
-          return (
-            <div key={k} className="truncate text-fg-muted" title={formatValue(arr)}>
-              {k}[{arr.length}] {arr.length ? <>top <span className="text-fg">{formatValue(arr[arr.length - 1])}</span></> : 'empty'}
-            </div>
-          )
-        })}
+      {lists.map((r) => {
+        const arr = Array.isArray(r.value) ? (r.value as unknown[]) : []
+        return (
+          <div key={r.name} className={clsx('truncate', live ? 'text-fg-muted' : 'text-fg-faint')} title={live ? formatValue(arr) : r.summary || undefined}>
+            {r.name}[{arr.length}] {arr.length ? <>top <span className="text-fg">{formatValue(arr[arr.length - 1])}</span></> : 'empty'}
+          </div>
+        )
+      })}
       {snap?.pending?.output !== undefined && (
         <div className="text-warn">
           ↦ {snap.pending.output} → {snap.pending.destination}
@@ -182,7 +235,7 @@ function StreamBody({ id, snap, started }: { id: string; snap?: CellSnapshot; st
     return (
       <>
         <div className="text-fg-muted">
-          IN <span className="text-fg">{stream}</span>
+          stream <span className="text-fg">{stream}</span>
           <span className="float-right">
             {pos}/{values.length}
           </span>
@@ -198,7 +251,7 @@ function StreamBody({ id, snap, started }: { id: string; snap?: CellSnapshot; st
     return (
       <>
         <div className="text-fg-muted">
-          OUT <span className="text-fg">{stream}</span>
+          expects <span className="text-fg">{stream}</span>
           <span className={clsx('float-right', state === 'passed' ? 'text-ok' : state === 'failed' ? 'text-bad' : '')}>
             {state === 'passed' ? '✓ ' : state === 'failed' ? '✗ ' : ''}
             {received.length}/{expected.length}

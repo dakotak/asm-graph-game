@@ -51,7 +51,7 @@ one session per connection); see [web.md](web.md).
 | Method | Params | Result |
 |---|---|---|
 | `initialize` | — | `name`, `version`, `protocolVersion`, `bytecodeVersion`, `puzzleSchemaVersion`, `solutionSchemaVersion`, `cellApiVersion`, `nativePlugins`, `cellTypes`, `methods` |
-| `listCellTypes` | — | `{types: [{type, description, programmable, instructions[], registers[], config[]}], operandKinds, ports, syntax}`. `operandKinds` documents each operand slot kind, `ports` describes P0–P3, ANY and LAST, and `syntax` gives comment characters and literal formats. |
+| `listCellTypes` | — | `{types: [{type, description, programmable, instructions[], registers[], state[], config[]}], operandKinds, ports, syntax}`. `state` lists the fields `CellSnapshot.state` reports (`{name, kind: "word"|"list", summary}`). `operandKinds` documents each operand slot kind, `ports` describes P0–P3, ANY and LAST, and `syntax` gives comment characters and literal formats. |
 | `assemble` | `{type, source, memoryLimit?}` | `{ok, bytes?, limit, instructions?, hex?, disassembly?, diagnostics}`. Compiles one program without touching the session, for live editor feedback. `bytes` is reported even when over the limit. |
 | `validatePuzzle` | `{path}` or `{yaml}` | `{valid, diagnostics}`. Nothing is loaded. |
 | `loadPuzzle` | `{path}` or `{yaml}` | `{puzzle, diagnostics}`. Clears any solution and simulation. |
@@ -107,7 +107,7 @@ Events are sent as notifications:
 | `runtime.error` | lifecycle | `{cell, pc, instruction, sourceLine, message}` |
 | `tick.completed` | ticks | `{status, instructions, transfers, progress}` |
 | `port.transfer` | ticks | `{from, to, value}` (writer → reader) |
-| `output.validation` | ticks | `OutputSnapshot`, sent when a stream's state changes |
+| `output.validation` | ticks | `OutputSnapshot`, sent every time an output cell receives a value (and so whenever its state changes) |
 | `cell.blocked` | ticks | `{reason, instruction, sourceLine}`, sent on the change to blocked |
 | `cell.unblocked` | ticks | — |
 | `instruction.completed` | all | `{pc, address, instruction, sourceLine, nextPc, halted?}` |

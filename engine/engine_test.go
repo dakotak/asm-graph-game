@@ -672,10 +672,15 @@ func TestEventsDescribeCommittedState(t *testing.T) {
 		}
 		lastSeq, lastTick = e.Seq, e.Tick
 	}
+	// One output.validation per value an output cell receives.
+	received := 0
+	for _, o := range r.Outputs {
+		received += len(o.Received)
+	}
 	if counts[engine.EventPortTransfer] != int(r.Metrics.Transfers) ||
 		counts[engine.EventInstructionCompleted] != int(r.Metrics.Instructions) ||
 		counts[engine.EventTickCompleted] != int(r.Metrics.Ticks) ||
-		counts[engine.EventOutputValidation] != 1 || counts[engine.EventSimulationCompleted] != 1 {
+		received < 2 || counts[engine.EventOutputValidation] != received || counts[engine.EventSimulationCompleted] != 1 {
 		t.Fatalf("counts %v vs metrics %+v", counts, r.Metrics)
 	}
 	// cell.state events carry the committed snapshot: the first one for cpu

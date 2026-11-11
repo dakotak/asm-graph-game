@@ -40,6 +40,12 @@ The optional interfaces `cell.StreamDeclarer` (on the architecture) and
 `cell.Source` / `cell.Sink` (on instances) connect a type to test-case
 streams and output validation.
 
+`cell.StateDescriber` (on the architecture) declares the fields `Inspect`
+reports, in display order, with a kind (`word` or `list`) and a summary.
+Frontends use it to show a cell's registers before a run starts. Without
+it, a type is described by its ISA's addressable registers, so a hidden
+register like the standard cell's `BAK` would only appear once running.
+
 ## Boundaries
 
 What the engine guarantees, and what plugins must do:

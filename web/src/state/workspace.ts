@@ -165,6 +165,21 @@ export function cellStream(cell: CellDef): string | undefined {
   return typeof s === 'string' ? s : undefined
 }
 
+/**
+ * Whether a non-programmable cell feeds a test input stream or collects a
+ * test output stream. Built-in types are recognised by name; plugin cells
+ * by whether their configured stream appears in the tests' inputs or outputs.
+ */
+export function streamRole(cell: CellDef, tests: { inputs: Record<string, unknown>; outputs: Record<string, unknown> }[] = []): 'input' | 'output' | undefined {
+  if (cell.type === 'input') return 'input'
+  if (cell.type === 'output') return 'output'
+  const stream = cellStream(cell)
+  if (!stream) return undefined
+  if (tests.some((t) => stream in t.inputs)) return 'input'
+  if (tests.some((t) => stream in t.outputs)) return 'output'
+  return undefined
+}
+
 export function findConnectionIndex(a: Endpoint, b: Endpoint): number {
   return findConnection(useWorkspace.getState().solution?.connections ?? [], a, b)
 }

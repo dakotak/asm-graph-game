@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -184,6 +185,9 @@ func TestStatelessRPC(t *testing.T) {
 	r = call(`{"jsonrpc":"2.0","id":5,"method":"listCellTypes"}`)
 	lt := r["result"].(map[string]any)
 	if lt["operandKinds"] == nil || len(lt["ports"].([]any)) != 6 || len(lt["types"].([]any)) != 4 {
+		t.Fatalf("listCellTypes: %v", lt)
+	}
+	if !strings.Contains(fmt.Sprint(lt["types"]), "name:BAK") {
 		t.Fatalf("listCellTypes: %v", lt)
 	}
 }

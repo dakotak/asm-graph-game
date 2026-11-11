@@ -45,6 +45,21 @@ type Architecture interface {
 	New(spec Spec, env Env) (Instance, error)
 }
 
+// StateField describes one entry of the map an Instance's Inspect returns,
+// so frontends can lay out a cell's registers before a run starts.
+type StateField struct {
+	Name    string `json:"name"`    // key in Inspect
+	Kind    string `json:"kind"`    // "word" (a single value) or "list"
+	Summary string `json:"summary"` // one-line description
+}
+
+// StateDescriber is optionally implemented by architectures to declare the
+// fields Inspect reports, in display order. Architectures that do not
+// implement it are described by their ISA's registers.
+type StateDescriber interface {
+	StateFields() []StateField
+}
+
 // StreamDeclarer is implemented by architectures that consume named
 // test-case input streams or produce output streams that are validated.
 // Puzzle validation uses it to check test cases without knowing about

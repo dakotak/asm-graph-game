@@ -104,7 +104,15 @@ export interface CellTypeInfo {
   programmable: boolean
   instructions?: InstructionInfo[]
   registers?: RegisterDef[]
+  /** Fields CellSnapshot.state reports, in display order. */
+  state?: StateField[]
   config?: ConfigField[]
+}
+
+export interface StateField {
+  name: string
+  kind: 'word' | 'list'
+  summary: string
 }
 
 export interface PortInfo {

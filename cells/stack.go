@@ -67,6 +67,12 @@ func (*Stack) Description() string {
 	return "Processor with ACC and a bounded stack (PUSH/POP/DUP/DROP/SWAP/PADD/DEPTH/JSE); no BAK."
 }
 func (s *Stack) ISA() *vm.ISA                   { return s.isa }
+func (*Stack) StateFields() []cell.StateField {
+	return []cell.StateField{
+		{Name: "ACC", Kind: "word", Summary: "Accumulator."},
+		{Name: "stack", Kind: "list", Summary: "LIFO stack; the last element is the top."},
+	}
+}
 func (*Stack) ConfigSchema() []cell.ConfigField { return stackSchema }
 func (*Stack) ValidateConfig(cfg map[string]any) []cell.ConfigError {
 	return configErrors(stackSchema, cfg)
