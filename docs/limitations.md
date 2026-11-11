@@ -1,8 +1,20 @@
 # Known limitations (V1)
 
-- **The web IDE is single-user and local.** It binds to loopback, has no
-  authentication, and stores solutions as files. Exposing it beyond your
-  machine (`--addr`, `--allow-host`) is only for trusted networks.
+- **The web IDE keeps your work in the browser.** Saved solutions,
+  imported puzzles and personal bests live in `localStorage` for that
+  browser profile; clearing site data deletes them, and there is no sync.
+  Export solutions to keep or move them.
+- **Personal bests are not tamper-proof.** The engine computes every score,
+  but it runs on the player's machine.
+- **Native plugins do not work in the IDE.** WebAssembly cannot load Go
+  plugins; cell types must be registered statically in
+  `cmd/asmgraph-wasm`.
+- **The engine download is about 1.6 MB gzipped** (5.7 MB uncompressed).
+- **`runTests` blocks the engine worker** until it finishes; the page stays
+  responsive, but Pause only applies to the interactive debugger run.
+- **The optional Go server is single-user and local.** It binds to
+  loopback and has no authentication. Exposing it beyond your machine
+  (`--addr`, `--allow-host`) is only for trusted networks.
 - **A peripheral completes at most one transfer per tick**, like every
   cell. A stack shared by several processors serves them one per tick.
   This keeps arbitration simple and deterministic; it is also a design
@@ -11,20 +23,17 @@
   Wiring two ports that both only send (or only receive) is allowed by
   the engine and simply never transfers. The web IDE refuses such wires,
   and the deadlock report explains them.
-- **Personal bests are per server and single-user.** They are files under
-  the solutions directory. There are no accounts, leaderboards, or
-  histograms yet; `scoring.Dominates`/`Frontier` are the starting point.
-- **Scoring runs synchronously on the server** when a solution is
-  submitted. A solution that runs to a very high tick limit makes that
-  request slow.
+- **No accounts or leaderboards yet.** `scoring.Dominates`/`Frontier` are
+  the starting point.
+- **Scoring runs every test synchronously** when a solution passes. A
+  solution that runs to a very high tick limit takes a while to score.
 - **Node IDs are generated** (`cpu1`, `stack1`) when hardware is added in
   the web IDE; renaming nodes requires editing the YAML.
 - **Puzzle editing in the browser** is not implemented. Puzzles are
   edited as YAML files. The backend already provides `validatePuzzle` and
   `exportPuzzle` for a future editor.
-- **Completion status** ("solved") comes from the server's personal bests
-  when a puzzle has been scored, and otherwise from the browser's
-  localStorage.
+- **Completion status** ("solved") comes from the stored personal bests,
+  or from the browser's record of passing runs.
 - **Native plugins are fragile.** They need Linux, macOS, or FreeBSD with
   cgo, and the plugin must be built with the exact toolchain and
   dependency versions of the host. Prefer static registration. There are

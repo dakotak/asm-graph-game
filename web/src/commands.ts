@@ -9,7 +9,7 @@ import { usePrefs } from './state/prefs'
 import { notify, useSim } from './state/sim'
 import { confirmDialog, promptDialog, useUi } from './state/ui'
 import { useWorkspace } from './state/workspace'
-import { isValidSolutionName } from './api/http'
+import { isValidSolutionName } from './api/library'
 
 export interface Command {
   id: string
@@ -53,7 +53,7 @@ export async function saveSolution(asCopy = false): Promise<boolean> {
   if (!name) {
     const picked = await promptDialog({
       title: asCopy ? 'Save a copy as' : 'Save solution as',
-      message: 'Solutions are stored on the server under solutions/<puzzle>/<name>.yaml.',
+      message: 'Solutions are stored in this browser. Export them to keep a file.',
       defaultValue: asCopy && ws.solutionName ? `${ws.solutionName}-copy` : ws.solutionName || 'main',
       confirmLabel: 'Save',
       validate: (v) => (isValidSolutionName(v) ? null : 'Use letters, digits, ".", "_" or "-" (max 64).'),
@@ -92,6 +92,23 @@ export function importSolution() {
     } catch (e) {
       notify('error', `Import failed: ${(e as Error).message}`)
     }
+  }
+  input.click()
+}
+
+/** Imports a puzzle file into the browser library and opens it. */
+export function importPuzzle() {
+  const input = document.createElement('input')
+  input.type = 'file'
+  input.accept = '.yaml,.yml,text/yaml'
+  input.onchange = async () => {
+    const f = input.files?.[0]
+    if (!f) return
+    if (f.size > 4 << 20) {
+      notify('error', 'That file is larger than 4 MiB.')
+      return
+    }
+    await controller.importPuzzle(f.name, await f.text())
   }
   input.click()
 }
@@ -160,6 +177,7 @@ export const commands: Command[] = [
   { id: 'export', title: 'Export solution YAML', group: 'Solution', enabled: hasPuzzle, run: exportSolution },
   { id: 'import', title: 'Import solution YAML…', group: 'Solution', enabled: hasPuzzle, run: importSolution },
   { id: 'open-puzzle', title: 'Browse puzzles…', group: 'Navigate', keys: 'Mod+O', run: () => useUi.setState({ browser: true }) },
+  { id: 'import-puzzle', title: 'Import puzzle file…', group: 'Navigate', run: importPuzzle },
   { id: 'focus-graph', title: 'Focus graph', group: 'Navigate', keys: 'Alt+1', run: () => useUi.setState({ focusGraph: useUi.getState().focusGraph + 1 }) },
   { id: 'focus-editor', title: 'Focus assembly editor', group: 'Navigate', keys: 'Alt+2', run: () => useUi.setState({ focusEditor: useUi.getState().focusEditor + 1 }) },
   { id: 'next-cell', title: 'Next cell', group: 'Navigate', keys: 'Alt+]', enabled: hasPuzzle, run: () => cycleCell(1) },
@@ -180,7 +198,7 @@ export const commands: Command[] = [
     group: 'View',
     run: () => usePrefs.getState().set({ theme: usePrefs.getState().theme === 'dark' ? 'light' : 'dark' }),
   },
-  { id: 'reconnect', title: 'Reconnect to server', group: 'Help', enabled: () => !connected(), run: () => controller.reconnect() },
+  { id: 'reconnect', title: 'Restart the engine', group: 'Help', enabled: () => !connected(), run: () => controller.reconnect() },
   { id: 'help', title: 'Keyboard shortcuts & help', group: 'Help', keys: '?', run: () => useUi.setState({ help: true }) },
 ]
 

@@ -37,6 +37,7 @@ import (
 	"asmgraph/cell"
 	"asmgraph/diag"
 	"asmgraph/engine"
+	"asmgraph/library"
 	"asmgraph/protocol"
 	"asmgraph/puzzle"
 	"asmgraph/scoring"
@@ -125,7 +126,7 @@ func (s *Server) Handler() http.Handler {
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("Referrer-Policy", "no-referrer")
 		h.Set("X-Frame-Options", "DENY")
-		h.Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "+
+		h.Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; "+
 			"img-src 'self' data:; font-src 'self' data:; worker-src 'self' blob:; connect-src 'self' ws: wss:; frame-ancestors 'none'")
 		s.mux.ServeHTTP(w, r)
 	})
@@ -178,24 +179,8 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 // --- puzzles -------------------------------------------------------------
 
 // PuzzleSummary describes one puzzle file for the puzzle browser.
-type PuzzleSummary struct {
-	ID                string    `json:"id"`
-	Name              string    `json:"name"`
-	Description       string    `json:"description"`
-	File              string    `json:"file"`
-	CellTypes         []string  `json:"cellTypes"`
-	Cells             int       `json:"cells"`
-	ProgrammableCells int       `json:"programmableCells"`
-	Tests             int       `json:"tests"`
-	Difficulty        any       `json:"difficulty,omitempty"`
-	Valid             bool      `json:"valid"`
-	Diagnostics       diag.List `json:"diagnostics,omitempty"`
-	Solutions         int       `json:"solutions"`
-	// Hardware is true when players build their own hardware.
-	Hardware bool `json:"hardware"`
-	// Bests are the personal bests per dimension (solved puzzles have them).
-	Bests map[scoring.Dimension]*scoring.Entry `json:"bests,omitempty"`
-}
+// PuzzleSummary describes one puzzle in the library (see package library).
+type PuzzleSummary = library.Summary
 
 type loadedPuzzle struct {
 	summary PuzzleSummary
@@ -219,36 +204,8 @@ func (s *Server) scanPuzzles() ([]loadedPuzzle, error) {
 		if err != nil || len(data) > 4<<20 {
 			continue
 		}
-		p, l := puzzle.Parse(data, name)
-		sum := PuzzleSummary{File: name, CellTypes: []string{}}
-		if l.HasErrors() {
-			sum.ID = strings.TrimSuffix(strings.TrimSuffix(name, ".yaml"), ".yml")
-			sum.Name = sum.ID
-			sum.Diagnostics = l
-		} else {
-			l = p.Validate(s.cfg.Registry)
-			sum.ID, sum.Name, sum.Description = p.ID, p.Name, p.Description
-			if sum.Name == "" {
-				sum.Name = p.ID
-			}
-			sum.Valid = !l.HasErrors()
-			sum.Diagnostics = l
-			sum.Cells, sum.Tests = len(p.Cells), len(p.Tests)
-			types := map[string]bool{}
-			for _, c := range p.Cells {
-				types[c.Type] = true
-				if a, ok := s.cfg.Registry.Lookup(c.Type); ok && a.ISA() != nil {
-					sum.ProgrammableCells++
-				}
-			}
-			for t := range types {
-				sum.CellTypes = append(sum.CellTypes, t)
-			}
-			sort.Strings(sum.CellTypes)
-			if p.Metadata != nil {
-				sum.Difficulty = p.Metadata["difficulty"]
-			}
-			sum.Hardware = p.AllowsHardware()
+		sum, p := library.Summarize(s.cfg.Registry, name, data)
+		if p != nil {
 			if _, err := s.solutionDir(p.ID); err == nil {
 				if rec, err := s.store().Load(p.ID); err == nil && len(rec.Bests) > 0 {
 					sum.Bests = rec.Bests
@@ -580,6 +537,7 @@ func (s *Server) getBestSolution(w http.ResponseWriter, r *http.Request) {
 // StatelessMethods may be called over POST /api/rpc.
 var StatelessMethods = map[string]bool{
 	"initialize": true, "listCellTypes": true, "validatePuzzle": true, "assemble": true,
+	"summarizePuzzle": true, "evaluateSolution": true,
 }
 
 func (s *Server) rpc(w http.ResponseWriter, r *http.Request) {

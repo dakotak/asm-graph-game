@@ -133,7 +133,9 @@ inline.
 
 ## `web`
 
-Serves the browser IDE and its HTTP and WebSocket API. See [web.md](web.md).
+Serves the built browser IDE (which does not need a server; any static
+host works) and an optional HTTP and WebSocket API for other clients. See
+[web.md](web.md#optional-go-server).
 
 ```
 asmgraph web [--addr 127.0.0.1:7357] [--puzzles examples/puzzles] [--solutions solutions] [--static web/dist] [--allow-host NAME]

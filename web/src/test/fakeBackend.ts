@@ -1,7 +1,9 @@
-// An in-memory stand-in for `asmgraph web` used by unit tests: a fake
-// WebSocket speaking JSON-RPC and a fetch() for the HTTP library API.
-// End-to-end tests (e2e/) run against the real Go server instead.
-import type { CellTypeCatalog, Puzzle, Snapshot } from '../api/types'
+// In-memory stand-ins used by unit tests: a fake engine connection (a
+// WebSocket look-alike speaking JSON-RPC, like the engine worker) and a
+// fake puzzle library. End-to-end tests (e2e/) run the real engine, compiled
+// to WebAssembly, in a real browser instead.
+import { ApiError, type Library } from '../api/library'
+import type { CellTypeCatalog, Puzzle, PuzzleSummary, ScoreResponse, Snapshot } from '../api/types'
 
 type Handler = (params: unknown) => unknown
 
@@ -214,44 +216,49 @@ function defaultHandlers(): Record<string, Handler> {
   }
 }
 
-/** A fetch() implementing the HTTP library endpoints. */
-export function fakeFetch(opts: { solutions?: Record<string, string>; puzzle?: Puzzle; score?: unknown } = {}) {
+/** An in-memory puzzle library with one puzzle (double-input by default). */
+export function fakeLibrary(opts: { solutions?: Record<string, string>; puzzle?: Puzzle; score?: unknown } = {}) {
   const solutions = { ...(opts.solutions ?? {}) }
-  const puts: { url: string; body: string }[] = []
+  const puts: { puzzle: string; name: string; yaml: string }[] = []
   const scorePosts: string[] = []
   const pz = opts.puzzle ?? puzzle
   const id = pz.id
-  const fn = async (url: string, init?: RequestInit) => {
-    const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status })
-    if (url === '/api/puzzles') {
-      return json(200, { puzzles: [{ id, name: pz.name ?? id, description: '', file: 'x', cellTypes: [], cells: 3, programmableCells: 1, tests: 2, valid: true, solutions: 0, hardware: !!pz.hardware }] })
-    }
-    if (url === `/api/puzzles/${id}`) {
-      return json(200, { summary: { id, valid: true }, yaml: 'puzzle-yaml', puzzle: pz })
-    }
-    if (url === `/api/puzzles/${id}/solutions`) {
-      return json(200, { solutions: Object.keys(solutions).map((name) => ({ name, modified: '2026-01-01T00:00:00Z', size: 1 })) })
-    }
-    if (url === `/api/puzzles/${id}/scores`) {
-      if (init?.method === 'POST') {
-        scorePosts.push(JSON.parse(String(init.body)).yaml)
-        return json(200, opts.score ?? { passed: true, improved: [], record: { puzzle: id, bests: {} } })
-      }
-      return json(200, { puzzle: id, bests: {} })
-    }
-    const m = new RegExp(`^/api/puzzles/${id}/solutions/(.+)$`).exec(url)
-    if (m) {
-      if (init?.method === 'PUT') {
-        puts.push({ url, body: String(init.body) })
-        solutions[decodeURIComponent(m[1])] = JSON.parse(String(init.body)).yaml
-        return json(200, { name: m[1], saved: true })
-      }
-      const y = solutions[decodeURIComponent(m[1])]
-      return y ? json(200, { name: m[1], yaml: y }) : json(404, { error: 'no such solution' })
-    }
-    return json(404, { error: 'not found' })
+  const notFound = () => new ApiError('not found', 404)
+  const library: Library = {
+    listPuzzles: async () => [
+      { id, name: pz.name ?? id, description: '', file: 'x', cellTypes: [], cells: 3, programmableCells: 1, tests: 2, valid: true, solutions: 0, hardware: !!pz.hardware },
+    ],
+    getPuzzle: async (pid) => {
+      if (pid !== id) throw notFound()
+      return { summary: { id, valid: true } as PuzzleSummary, yaml: 'puzzle-yaml', puzzle: pz }
+    },
+    listSolutions: async () => Object.keys(solutions).map((name) => ({ name, modified: '2026-01-01T00:00:00Z', size: 1 })),
+    getSolution: async (_pid, name) => {
+      if (!(name in solutions)) throw notFound()
+      return { name, yaml: solutions[name] }
+    },
+    saveSolution: async (pid, name, yaml) => {
+      puts.push({ puzzle: pid, name, yaml })
+      solutions[name] = yaml
+      return { name, saved: true }
+    },
+    deleteSolution: async (_pid, name) => {
+      delete solutions[name]
+    },
+    getScores: async () => ({ puzzle: id, bests: {} }),
+    submitScore: async (_pid, yaml) => {
+      scorePosts.push(yaml)
+      return (opts.score ?? { passed: true, improved: [], record: { puzzle: id, bests: {} } }) as ScoreResponse
+    },
+    getBestSolution: async () => {
+      throw notFound()
+    },
+    importPuzzle: async () => {
+      throw new ApiError('not supported', 400)
+    },
+    removePuzzle: async () => {},
   }
-  return { fn, puts, solutions, scorePosts }
+  return { library, puts, solutions, scorePosts }
 }
 
 export const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms))

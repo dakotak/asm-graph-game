@@ -169,7 +169,7 @@ function ConnectionDot() {
   return (
     <span
       className={clsx('flex items-center gap-1 px-1 font-mono text-[10px]', ok ? 'text-ok' : 'text-warn')}
-      title={ok ? 'Connected to asmgraph server' : `Server connection: ${conn}`}
+      title={ok ? 'The engine (WebAssembly) is running' : `Engine: ${conn}`}
       data-testid="connection"
       data-state={conn}
     >

@@ -20,6 +20,7 @@ import (
 	"asmgraph/cell"
 	"asmgraph/diag"
 	"asmgraph/engine"
+	"asmgraph/library"
 	"asmgraph/plugins"
 	"asmgraph/puzzle"
 	"asmgraph/solution"
@@ -162,28 +163,30 @@ var methods map[string]handler
 
 func init() {
 	methods = map[string]handler{
-		"initialize":     (*Service).initialize,
-		"listCellTypes":  (*Service).listCellTypes,
-		"validatePuzzle": (*Service).validatePuzzle,
-		"loadPuzzle":     (*Service).loadPuzzle,
-		"loadSolution":   (*Service).loadSolution,
-		"exportPuzzle":   (*Service).exportPuzzle,
-		"exportSolution": (*Service).exportSolution,
-		"compile":        (*Service).compile,
-		"start":          (*Service).start,
-		"step":           (*Service).step,
-		"run":            (*Service).run,
-		"pause":          (*Service).pause,
-		"reset":          (*Service).reset,
-		"getState":       (*Service).getState,
-		"getCell":        (*Service).getCell,
-		"getResult":      (*Service).getResult,
-		"runTests":       (*Service).runTests,
-		"runTest":        (*Service).runTest,
-		"setBreakpoints": (*Service).setBreakpoints,
-		"assemble":       (*Service).assemble,
-		"setEventLevel":  (*Service).setEventLevel,
-		"shutdown":       (*Service).doShutdown,
+		"initialize":       (*Service).initialize,
+		"listCellTypes":    (*Service).listCellTypes,
+		"validatePuzzle":   (*Service).validatePuzzle,
+		"loadPuzzle":       (*Service).loadPuzzle,
+		"loadSolution":     (*Service).loadSolution,
+		"exportPuzzle":     (*Service).exportPuzzle,
+		"exportSolution":   (*Service).exportSolution,
+		"compile":          (*Service).compile,
+		"start":            (*Service).start,
+		"step":             (*Service).step,
+		"run":              (*Service).run,
+		"pause":            (*Service).pause,
+		"reset":            (*Service).reset,
+		"getState":         (*Service).getState,
+		"getCell":          (*Service).getCell,
+		"getResult":        (*Service).getResult,
+		"runTests":         (*Service).runTests,
+		"runTest":          (*Service).runTest,
+		"setBreakpoints":   (*Service).setBreakpoints,
+		"assemble":         (*Service).assemble,
+		"summarizePuzzle":  (*Service).summarizePuzzle,
+		"evaluateSolution": (*Service).evaluateSolution,
+		"setEventLevel":    (*Service).setEventLevel,
+		"shutdown":         (*Service).doShutdown,
 	}
 }
 
@@ -453,6 +456,63 @@ func (s *Service) parsePuzzle(params json.RawMessage) (*puzzle.Puzzle, diag.List
 	}
 	l = append(l, p.Validate(s.reg)...)
 	return p, l, nil
+}
+
+// SummarizePuzzleParams names a puzzle file for summarizePuzzle.
+type SummarizePuzzleParams struct {
+	YAML string `json:"yaml"`
+	File string `json:"file,omitempty"`
+}
+
+// summarizePuzzle describes one puzzle file for a puzzle browser (see
+// package library). It is stateless: hosts without a server, such as the
+// WebAssembly engine, use it to build their puzzle library.
+func (s *Service) summarizePuzzle(params json.RawMessage) (any, *Error) {
+	var p SummarizePuzzleParams
+	if e := decode(params, &p); e != nil {
+		return nil, e
+	}
+	if p.File == "" {
+		p.File = "puzzle.yaml"
+	}
+	sum, pz := library.Summarize(s.reg, p.File, []byte(p.YAML))
+	return map[string]any{"summary": sum, "puzzle": pz}, nil
+}
+
+// EvaluateSolutionParams carries a puzzle and a solution as YAML.
+type EvaluateSolutionParams struct {
+	Puzzle         string `json:"puzzle"`
+	Solution       string `json:"solution"`
+	MaxTicks       int64  `json:"maxTicks,omitempty"`
+	CycleDetection bool   `json:"cycleDetection,omitempty"`
+}
+
+// evaluateSolution validates a solution and runs every test case on fresh
+// machines, returning the suite result (with its score when every test
+// passes). It does not touch the session, so it can score a solution while
+// another one is being debugged.
+func (s *Service) evaluateSolution(params json.RawMessage) (any, *Error) {
+	var p EvaluateSolutionParams
+	if e := decode(params, &p); e != nil {
+		return nil, e
+	}
+	pz, l := puzzle.Parse([]byte(p.Puzzle), "puzzle.yaml")
+	if l.HasErrors() {
+		return nil, diagErr(CodeValidationFailed, "puzzle is invalid", l)
+	}
+	sol, l := solution.Parse([]byte(p.Solution), "solution.yaml")
+	if l.HasErrors() {
+		return nil, diagErr(CodeValidationFailed, "solution is invalid", l)
+	}
+	bp, l := engine.Prepare(s.reg, pz, sol)
+	if l.HasErrors() {
+		return nil, diagErr(CodeValidationFailed, "solution is invalid", l)
+	}
+	res, err := engine.RunAll(bp, engine.Options{MaxTicks: p.MaxTicks, CycleDetection: p.CycleDetection})
+	if err != nil {
+		return nil, errf(CodeInternalError, "%v", err)
+	}
+	return res, nil
 }
 
 func (s *Service) validatePuzzle(params json.RawMessage) (any, *Error) {

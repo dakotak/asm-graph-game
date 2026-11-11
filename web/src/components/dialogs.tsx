@@ -1,8 +1,7 @@
 import clsx from 'clsx'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { http } from '../api/http'
 import type { SolutionInfo } from '../api/types'
-import { commands, confirmDiscard, displayKeys, exportSolution, importSolution, runCommand } from '../commands'
+import { commands, confirmDiscard, displayKeys, exportSolution, importPuzzle, importSolution, runCommand } from '../commands'
 import { controller } from '../services/controller'
 import { solvedPuzzles } from '../state/prefs'
 import { dismissNotice, useSim } from '../state/sim'
@@ -31,7 +30,7 @@ export function PuzzleBrowser() {
   }
   return (
     <Modal title="Puzzles" onClose={close} width="max-w-3xl">
-      <div className="border-b border-line p-2">
+      <div className="flex gap-2 border-b border-line p-2">
         <input
           className="h-8 w-full rounded-sm border border-line bg-bg px-2 text-fg outline-none focus:border-accent"
           placeholder="Search puzzles…"
@@ -39,9 +38,12 @@ export function PuzzleBrowser() {
           onChange={(e) => setQ(e.target.value)}
           aria-label="Search puzzles"
         />
+        <Button onClick={() => importPuzzle()} title="Add a puzzle YAML file to this browser's library" data-testid="import-puzzle">
+          Import puzzle…
+        </Button>
       </div>
       <ul className="divide-y divide-line" data-testid="puzzle-list">
-        {list.length === 0 && <li className="p-4 text-fg-muted">No puzzles found. Is the server's --puzzles directory correct?</li>}
+        {list.length === 0 && <li className="p-4 text-fg-muted">No puzzles found.</li>}
         {list.map((p) => (
           <li key={p.id}>
             <button
@@ -55,6 +57,11 @@ export function PuzzleBrowser() {
                 <span className="font-mono text-[10px] text-fg-faint">{p.id}</span>
                 {(solved.has(p.id) || p.bests) && <span className="text-[11px] text-ok">✓ solved</span>}
                 {p.hardware && <span className="rounded-sm bg-accent/15 px-1 text-[10px] text-accent">build your hardware</span>}
+                {p.imported && (
+                  <span className="rounded-sm border border-line px-1 text-[10px] text-fg-muted" title="Imported into this browser">
+                    imported
+                  </span>
+                )}
                 {!p.valid && <span className="text-[11px] text-bad">✗ invalid: {p.diagnostics?.[0]?.message}</span>}
                 <span className="ml-auto font-mono text-[11px] text-fg-muted">
                   {p.difficulty !== undefined && <>difficulty {formatValue(p.difficulty)} · </>}
@@ -94,7 +101,7 @@ export function SolutionsDialog() {
   useEffect(() => {
     if (!open || !puzzleId) return
     setList(null)
-    http.listSolutions(puzzleId).then(setList, (e) => setError((e as Error).message))
+    controller.library.listSolutions(puzzleId).then(setList, (e) => setError((e as Error).message))
   }, [open, puzzleId])
   if (!open) return null
   const close = () => useUi.setState({ solutions: false })
@@ -454,8 +461,8 @@ export function ConnectionBanner() {
         {conn === 'open'
           ? error
           : conn === 'connecting'
-            ? 'Connecting to the asmgraph server…'
-            : `Not connected to the asmgraph server${error ? ` (${error})` : ''}. Your edits are kept locally.`}
+            ? 'Starting the engine…'
+            : `The engine is not running${error ? ` (${error})` : ''}. Your edits are kept.`}
       </span>
       {conn !== 'open' && conn !== 'connecting' && (
         <Button className="ml-auto" onClick={() => controller.reconnect()}>

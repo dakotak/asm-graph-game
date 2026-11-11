@@ -7,9 +7,17 @@ JSON**. Each request, response, and notification is one line.
 - **stderr** carries logs.
 
 The commands are implemented by the transport-independent
-`protocol.Service` through `transport/jsonrpc`. `asmgraph web` exposes the
-same protocol over a WebSocket (`/api/ws`, one message per text frame,
-one session per connection); see [web.md](web.md).
+`protocol.Service` through `transport/jsonrpc`. The same protocol is
+available:
+
+- over a WebSocket from `asmgraph web` (`/api/ws`, one message per text
+  frame, one session per connection);
+- in the browser or Node, from the WebAssembly build
+  (`cmd/asmgraph-wasm`): `asmgraphEngine.handle(message)` returns the
+  response string, and `asmgraphEngine.onEvent(fn)` receives event
+  notifications. File paths are refused there; send YAML inline.
+
+See [web.md](web.md).
 
 ## Framing
 
@@ -54,6 +62,8 @@ one session per connection); see [web.md](web.md).
 | `listCellTypes` | — | `{types: [{type, description, programmable, instructions[], registers[], state[], config[], hardware}], operandKinds, ports, syntax}`. `state` lists the fields `CellSnapshot.state` reports (`{name, kind: "word"|"list", summary}`). `hardware` is the type's `cell.HardwareSpec`: `{category, ports: {min, max, default}, portFunctions?: {functions: [{name, direction, summary, min?, max?}], configurable, default, rule?}, programMemory?: {min, max, default}, cost: {base, perPort, properties?}, puzzleOnly?, overrides: {cost, defaults}}`. `operandKinds` documents each operand slot kind, `ports` describes `Pn`, ANY and LAST, and `syntax` gives comment characters and literal formats. |
 | `assemble` | `{type, source, memoryLimit?, ports?}` | `{ok, bytes?, limit, instructions?, hex?, disassembly?, diagnostics}`. Compiles one program without touching the session, for live editor feedback. `bytes` is reported even when over the limit. With `ports`, naming a port the cell does not have is an error. |
 | `validatePuzzle` | `{path}` or `{yaml}` | `{valid, diagnostics}`. Nothing is loaded. |
+| `summarizePuzzle` | `{yaml, file?}` | `{summary, puzzle}`. A puzzle browser's description of one file (`library.Summary`: id, name, description, file, cellTypes, cells, programmableCells, tests, difficulty, valid, diagnostics, hardware). `puzzle` is null if the file does not parse. Stateless. |
+| `evaluateSolution` | `{puzzle, solution, maxTicks?, cycleDetection?}` (both YAML) | `SuiteResult`, with `score` when every test passes. Validates and runs every test on fresh machines without touching the session. Invalid input gives a validation error with diagnostics. |
 | `loadPuzzle` | `{path}` or `{yaml}` | `{puzzle, diagnostics, hardware, migrated}`. Clears any solution and simulation. `hardware` is the effective catalog players may build from (`puzzle.Effective`: `{type, spec, ports, programMemory?, functions?, functionMax?, config?, cost, min, max}`), or null for fixed-topology puzzles. `migrated` lists schema-v1 conversions. |
 | `loadSolution` | `{path}` or `{yaml}` | `{solution, diagnostics, hardware}`. Validates against the loaded puzzle. `hardware` is the `HardwareReport` `{allowed, nodes: [{id, type, category, ports, programMemory?, portFunctions?, cost}], totalCost, maxCost?, nodeCount, maxNodes?, counts}`. On a validation error the report is also in the error's `data.hardware`, next to `data.diagnostics`. |
 | `exportPuzzle` / `exportSolution` | — | `{yaml}` of the loaded document |

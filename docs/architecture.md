@@ -19,7 +19,7 @@ solution.yaml ─► solution.Parse ─► Solution.Validate(puzzle) ──► g
        NewMachine(test 0)      NewMachine(test 1)   …   (one fresh machine per test case)
                  │                                         │
          Step / Run ──► events ──► Session ──►        RunAll ──► Score{cost, ticks, bytes}
-                 protocol.Service ──► transport/stdio | transport/web ──► scoring.Store (bests)
+                 protocol.Service ──► transport/stdio | transport/web | cmd/asmgraph-wasm (browser)
 ```
 
 ## Packages
@@ -39,11 +39,15 @@ solution.yaml ─► solution.Parse ─► Solution.Validate(puzzle) ──► g
 | `protocol` | Transport-independent command dispatcher and event filtering | `engine` |
 | `transport/jsonrpc` | JSON-RPC 2.0 message handling shared by all transports | `protocol` |
 | `transport/stdio` | JSON-RPC over newline-delimited stdin/stdout | `transport/jsonrpc` |
-| `transport/web` | HTTP library API, WebSocket JSON-RPC sessions, static frontend ([web.md](web.md)) | `transport/jsonrpc` |
+| `transport/web` | Optional server: HTTP library API, WebSocket JSON-RPC sessions, static frontend ([web.md](web.md)) | `transport/jsonrpc` |
+| `library` | Puzzle summaries for puzzle browsers, shared by the server and the browser engine | `puzzle` |
+| `cmd/asmgraph-wasm` | The engine as WebAssembly: the JSON-RPC dispatcher behind a two-function JS API | `transport/jsonrpc` |
 | `cmd/asmgraph` | CLI | everything |
 
 There are no import cycles. The engine does not import any transport,
-rendering, or terminal code.
+rendering, or terminal code, which is what lets the same engine run
+natively (CLI, servers) and in the browser as WebAssembly with no changes
+beyond `engine.RunYield`.
 
 ## Main design decisions
 

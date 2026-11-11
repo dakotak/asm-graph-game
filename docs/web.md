@@ -1,88 +1,151 @@
 # Web IDE
 
-`asmgraph web` serves a browser IDE for the puzzle game. It has an
-interactive graph editor, a Monaco assembly editor, and a debugger. All of
-these drive the real Go engine.
+The web IDE is a static web app: an interactive graph editor, a Monaco
+assembly editor, a hardware designer, and a debugger. **There is no
+backend server.** The engine — the same Go code the CLI uses — is compiled
+to WebAssembly and runs in a Web Worker in the browser.
 
-The browser never simulates anything. Instruction execution, bytecode
-compilation, port communication, blocking, program counters, registers,
-test validation, timing, and deadlock and cycle detection all come from the
-backend. The frontend handles presentation, interaction, and local editing
-state only.
+The browser UI still never simulates anything itself. Instruction
+execution, bytecode compilation, port communication, blocking, program
+counters, registers, hardware validation and costs, test validation,
+scoring, and deadlock and cycle detection all come from the Go engine. The
+UI handles presentation, interaction, and local editing state only.
 
 ## Quick start
+
+Needs Go (to compile the engine) and Node.js 20 or later.
+
+```bash
+cd web && npm ci && npm run dev
+```
+
+Then open <http://127.0.0.1:5173>. `npm run dev` builds the engine
+(`scripts/build-wasm.sh`) and starts Vite with hot reload. Re-run
+`npm run wasm` after changing Go code.
 
 Production build:
 
 ```bash
-cd web && npm ci && npm run build && cd ..
+cd web && npm run build
 ```
+
+`web/dist/` is a self-contained static site (it uses relative URLs, so any
+path works). Serve it with any static file server, for example:
 
 ```bash
-go run ./cmd/asmgraph web
+npx --prefix web vite preview web
 ```
 
-Then open <http://127.0.0.1:7357>.
-
-Development, with hot reload. Run each command in its own terminal:
-
-```bash
-go run ./cmd/asmgraph web --static ''
-```
-
-```bash
-cd web && npm run dev
-```
-
-Then open <http://127.0.0.1:5173>. Vite proxies `/api` (including the
-WebSocket) to the Go server. Set `ASMGRAPH_BACKEND` to point the proxy at
-a different backend.
-
-`asmgraph web` flags:
-
-| Flag | Default | Meaning |
-|---|---|---|
-| `--addr` | `127.0.0.1:7357` | Listen address. Keep it on loopback unless you know why. |
-| `--puzzles` | `examples/puzzles` | Directory of puzzle YAML files |
-| `--solutions` | `solutions` | Where solutions are saved: `<dir>/<puzzle-id>/<name>.yaml` |
-| `--static` | `web/dist` | Built frontend. Pass `''` to serve only the API. |
-| `--allow-host` | | Extra Host/Origin name to accept, for example a LAN hostname. Repeatable. |
-| `--plugin` | | Native cell plugin to load. Repeatable. |
+`asmgraph web` can serve it too (see [Go server](#optional-go-server)).
+Static hosts must serve `.wasm` files as `application/wasm` for the fastest
+startup; others work, just slower.
 
 ## Architecture
 
 ```
-┌────────────── browser ───────────────┐          ┌──────────── asmgraph web ─────────────┐
-│ React components (graph, editor, …)   │          │ transport/web                         │
-│        ▲ selectors      │ actions     │  HTTP    │  /api/puzzles…  puzzle + solution     │
-│ Zustand stores ◄──── controller ──────┼─────────►│                 library (files)       │
-│  workspace (editing)    │ JSON-RPC    │  WS      │  /api/ws ─► transport/jsonrpc ─►      │
-│  sim (execution)        └─────────────┼─────────►│        protocol.Service ─► engine     │
-│  prefs, ui              ◄── events ───┼──────────│        (one session per connection)   │
-└───────────────────────────────────────┘          └───────────────────────────────────────┘
+┌──────────────────────────── browser ─────────────────────────────┐
+│ React components (graph, editor, …)                               │
+│        ▲ selectors      │ actions                                 │
+│ Zustand stores ◄──── controller ────────────────┐                 │
+│  workspace (editing)    │  JSON-RPC (strings)   │ library calls   │
+│  sim (execution)        ▼                       ▼                 │
+│  prefs, ui        WorkerSocket          BrowserLibrary            │
+│        ▲                │  postMessage    bundled puzzles,        │
+│        │ events         ▼                 localStorage: saved     │
+│  ┌─────┴──────── Web Worker ───────────┐  solutions, bests,       │
+│  │ asmgraph.wasm (cmd/asmgraph-wasm)   │  imported puzzles        │
+│  │ transport/jsonrpc ─► protocol.Service ─► engine                │
+│  └─────────────────────────────────────┘                          │
+└───────────────────────────────────────────────────────────────────┘
 ```
 
-The WebSocket carries **exactly the same JSON-RPC 2.0 protocol** as
-`asmgraph serve --stdio`. Both transports share `transport/jsonrpc`. There
-is no second, browser-only protocol; see [protocol.md](protocol.md).
+**One protocol everywhere.** The worker runs the same
+`transport/jsonrpc.Dispatcher` and `protocol.Service` as
+`asmgraph serve --stdio` and the WebSocket server, so the browser speaks
+exactly the JSON-RPC 2.0 protocol in [protocol.md](protocol.md).
+`engine-wasm/workerSocket.ts` makes the worker look like a WebSocket to the
+existing RPC client, so its timeouts, error mapping and reconnect logic
+apply unchanged: if the engine fails, a fresh one is started.
 
-### Backend additions for the browser
+**Long runs stay responsive.** The worker keeps the page smooth, and
+unpaced runs (`run` with `delayMs: 0`) pause for a millisecond every 8 ms
+(`engine.RunYield`), because a single-threaded WebAssembly Go program only
+lets other work — a `pause` request, event delivery — in when it blocks.
+`runTests` and `evaluateSolution` run to completion without yielding; they
+block only the worker, never the page.
 
-These were added inside the existing architecture, and all are covered by
-Go tests:
+**Engine build.** `scripts/build-wasm.sh` compiles `cmd/asmgraph-wasm`
+with `GOOS=js GOARCH=wasm` into `web/public/engine/asmgraph.wasm` (about
+5.7 MB, 1.6 MB gzipped) and copies Go's `wasm_exec.js` next to it; both
+must come from the same Go toolchain. They are build outputs (gitignored).
+Only statically registered cell types are available: native Go plugins
+cannot be loaded into WebAssembly. Register plugin types in
+`cmd/asmgraph-wasm` to make them available in the IDE.
+
+### Library and storage
+
+`api/library.ts` (`BrowserLibrary`) replaces the old HTTP library API:
+
+| Data | Where |
+|---|---|
+| Puzzles | `examples/puzzles/*.yaml`, bundled into the build, plus puzzle files the player imports (**Import puzzle…** in the puzzle browser or the command palette). Summaries and validation come from the engine (`summarizePuzzle`). |
+| Imported puzzles | `localStorage["asmgraph.puzzles"]`; an import may not reuse a built-in puzzle's id |
+| Saved solutions | `localStorage["asmgraph.solutions.<puzzle>"]` |
+| Personal bests | `localStorage["asmgraph.bests.<puzzle>"]`, with the solution behind each best |
+| Drafts, preferences | `localStorage` (as before) |
+
+**Scores** come from the engine: **Run all tests** that pass submits the
+solution to `evaluateSolution`, which re-validates it and runs every test
+on fresh machines, and only then is the score compared with the stored
+bests (lower wins per dimension, ties broken by cost, ticks, bytes — the
+same rule as `scoring.Better`). Because everything runs on the player's
+machine, personal bests are a convenience, not tamper-proof records.
+
+Browser storage is per browser profile and can be cleared by the user.
+**Export solution YAML** and **Import solution YAML** move work between
+browsers; exported files also work with the CLI.
+
+### Engine additions for the browser
 
 | Addition | Where | Why |
 |---|---|---|
-| `transport/web` | new package | HTTP library API, WebSocket JSON-RPC sessions, static files, host and origin checks, backpressure |
-| `transport/jsonrpc` | extracted from stdio | Shared JSON-RPC framing for every transport |
+| `cmd/asmgraph-wasm` | new command | The engine as WebAssembly: `asmgraphEngine.handle(json)` and `onEvent(fn)` |
+| `summarizePuzzle` method | protocol, `library` package | Puzzle summaries for the browser library, shared with the Go server |
+| `evaluateSolution` method | protocol | Validates a solution and runs every test without touching the session; used for scoring |
+| `engine.RunYield` | engine | Lets unpaced runs yield in single-threaded hosts |
+| `transport/jsonrpc` | shared | One JSON-RPC implementation for stdio, WebSocket and WebAssembly |
 | `assemble` method | protocol | Compiles one program without touching the session, for the exact live byte count and errors while typing |
 | `runTest` method | protocol, `Session.RunTest` | Runs a single test on a fresh machine without disturbing the debugger |
 | `setBreakpoints` method | protocol, `Session.SetBreakpoints`, `Machine.BreakpointHit` | Real breakpoints. They decide only *when* a run pauses, never what it computes. |
 | `listCellTypes` extras | protocol | `operandKinds`, `ports`, `syntax`, `state`, and `hardware`, so the editor needs no hard-coded rules |
 | Hardware catalog and report | `loadPuzzle`, `loadSolution` | Effective limits for the palette; per-node costs, budget, and violations for the design being edited |
-| Scores | `POST /api/puzzles/{id}/scores`, `scoring` package | The server re-runs a passing solution and keeps per-dimension personal bests |
 
-## HTTP API
+**Security.** The production build carries a Content-Security-Policy
+(`script-src 'self' 'wasm-unsafe-eval'`, nothing from other origins).
+Puzzle and solution text is never rendered as HTML. Nothing leaves the
+browser.
+
+## Optional Go server
+
+The IDE does not need it, but `asmgraph web` is still useful: it can serve
+the static build, and it offers the engine to other clients over HTTP and
+WebSocket, with puzzles from a directory and solutions and bests stored as
+files.
+
+```bash
+go run ./cmd/asmgraph web
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--addr` | `127.0.0.1:7357` | Listen address. Keep it on loopback unless you know why. |
+| `--puzzles` | `examples/puzzles` | Directory of puzzle YAML files (for the API) |
+| `--solutions` | `solutions` | Where API clients' solutions and bests are saved: `<dir>/<puzzle-id>/` |
+| `--static` | `web/dist` | Built frontend to serve. Pass `''` to serve only the API. |
+| `--allow-host` | | Extra Host/Origin name to accept, for example a LAN hostname. Repeatable. |
+| `--plugin` | | Native cell plugin to load for API clients. Repeatable. |
+
+### HTTP API
 
 Every response is JSON. Errors are `{"error": string, "diagnostics"?: [...]}`
 with an appropriate status code.
@@ -98,7 +161,7 @@ with an appropriate status code.
 | `GET /api/puzzles/{id}/scores` | Personal bests: `{puzzle, bests: {cost?, ticks?, bytes?: {score, file, achieved}}}` |
 | `POST /api/puzzles/{id}/scores` | Body `{yaml}`. The server validates the solution, runs **every** test itself, and, if all pass, records the score: `{passed, summary, score?, improved: [dimension], record}`. Invalid solutions get 422 with diagnostics. The client never sends a score. |
 | `GET /api/puzzles/{id}/scores/{cost\|ticks\|bytes}/solution` | `{name, yaml}` of the solution behind that personal best |
-| `POST /api/rpc` | Stateless JSON-RPC: `initialize`, `listCellTypes`, `validatePuzzle`, `assemble` |
+| `POST /api/rpc` | Stateless JSON-RPC: `initialize`, `listCellTypes`, `validatePuzzle`, `assemble`, `summarizePuzzle`, `evaluateSolution` |
 | `GET /api/ws` | WebSocket. Full JSON-RPC session with event notifications. |
 
 **Backpressure.** Events go through a bounded queue for each connection.
@@ -118,8 +181,9 @@ Responses are never dropped.
   refused.
 - The WebSocket service sets `AllowFiles = false`, so `loadPuzzle {path}`
   is refused and clients send YAML inline.
-- Responses carry a strict Content-Security-Policy (`script-src 'self'`,
-  `frame-ancestors 'none'`), `nosniff`, and `no-referrer`.
+- Responses carry a strict Content-Security-Policy (`script-src 'self'
+  'wasm-unsafe-eval'`, `frame-ancestors 'none'`), `nosniff`, and
+  `no-referrer`.
 - No subprocesses are started.
 
 ## Frontend
@@ -291,19 +355,19 @@ For puzzles with a `hardware` section (see [hardware.md](hardware.md)):
 
 | Action | How |
 |---|---|
-| Save | Mod+S. Asks for a name the first time. Written to the server. |
+| Save | Mod+S. Asks for a name the first time. Stored in this browser. |
 | Save a copy | Mod+Shift+S |
 | Open a saved solution | Click the solution name in the toolbar |
 | New empty solution | Command palette |
 | Export YAML | Downloads the file |
-| Import YAML | Must be for the open puzzle; validated by shape, then by the backend |
+| Import YAML | Must be for the open puzzle; validated by shape, then by the engine |
 
 - The dirty state is shown as ● in the toolbar.
 - Discarding unsaved work asks for confirmation, and the browser warns on
   unload.
 - Unsaved edits are also kept as a **local draft** in localStorage and
-  restored when you reopen the puzzle. Drafts are a safety net; the files
-  on the server and exports are the real storage.
+  restored when you reopen the puzzle. Drafts are a safety net; saved
+  solutions and exported files are the real storage.
 - When a puzzle opens, the app restores a draft if one exists, otherwise
   loads the most recently saved solution, otherwise starts an empty one.
 
@@ -362,7 +426,9 @@ npm run e2e
 npm run typecheck
 ```
 
-- **Unit tests** (Vitest, React Testing Library, jsdom; 53 tests):
+`npm test` builds the engine first, because some tests run it.
+
+- **Unit tests** (Vitest, React Testing Library, jsdom; 61 tests):
   - solution YAML round trips (including player hardware) and rejections
   - connection rules, including port counts and data directions
   - hardware resolution: defaults, the cost mirror, port placement
@@ -377,18 +443,27 @@ npm run typecheck
     backend violations, score submission)
   - component rendering: the test panel, diagnostics, toolbar control
     states, palette, event filtering, and port and cell presentation
-- **End-to-end** (Playwright, against the **real Go server** serving the
-  production build, with a throwaway solutions directory):
+  - the browser library: saved solutions, imported puzzles (refusing
+    invalid files and built-in ids), and per-dimension personal bests
+  - **the real engine**: `engine-wasm/engine.test.ts` loads
+    `asmgraph.wasm` in Node and checks the protocol version, summarizes
+    and scores the example puzzles (the same scores as the CLI), runs an
+    interactive session with events, and pauses a long unpaced run
+- **End-to-end** (Playwright, against the **production build on a plain
+  static server**, so the engine is the real WebAssembly build in
+  Chromium; each test starts with empty browser storage):
   - build a solution by typing in Monaco and dragging wires, then check
-    the exact byte count, run all tests (3/3), and save to disk
+    the exact byte count, run all tests (3/3), and save it
   - compile errors as editor markers and diagnostics
   - step, run to completion, and reset (tick values match the CLI)
   - invalid connections are rejected and deleting a wire works
   - export and re-import
   - design hardware for `stack-reverse`: add a processor and a passive
     stack, configure the stack, a refused POP-to-input wire, wire it, type
-    the program, pass 3/3, and get scored by the server
-- **Go:** `go test ./transport/web` covers:
+    the program, pass 3/3, and get scored by the engine
+  - import a puzzle file into the browser library
+- **Go:** `go test ./library ./protocol` cover puzzle summaries and the
+  stateless methods; `go test ./transport/web` covers the optional server:
   - the library API and path-traversal rejection
   - the host check
   - stateless RPC
