@@ -16,13 +16,15 @@ It is inspired by TIS-100, but the machine is a **graph**, not a grid:
 Each puzzle and **all of its test cases live in one YAML file**. The
 player's solution (connections and programs) is a **separate YAML file**.
 
-There is no graphical frontend yet. The engine is a Go library with a CLI
-and a JSON-RPC 2.0 interface over stdio, so a TUI, a web editor, or an IDE
-extension can drive it.
+The engine is a Go library with a CLI, a JSON-RPC 2.0 interface (over
+stdio or WebSocket), and a **browser IDE** with a graph editor, a Monaco
+assembly editor, and a debugger. All of them drive the same engine; see
+[docs/web.md](docs/web.md).
 
 ## Quick start
 
-Requires Go 1.22 or later. The only dependency is `gopkg.in/yaml.v3`.
+Requires Go 1.23 or later. The Go dependencies are `gopkg.in/yaml.v3` and
+`github.com/coder/websocket`. The web IDE needs Node.js 20 or later.
 
 ```bash
 go build -o bin/asmgraph ./cmd/asmgraph
@@ -43,6 +45,14 @@ ticks: total 41, max 15   instructions: 41   transfers: 22
 program bytes: 10 (processor 10/32)
 cells used: 3/3   connections: 2
 ```
+
+Run the web IDE (build the frontend once, then serve it):
+
+```bash
+cd web && npm ci && npm run build && cd .. && go run ./cmd/asmgraph web
+```
+
+Then open <http://127.0.0.1:7357>.
 
 More commands:
 
@@ -92,9 +102,12 @@ solution/          solution YAML schema, loading, validation
 validate/          exact-output stream validation
 engine/            blueprint, deterministic machine, runner, session API
 protocol/          transport-independent command/event service
+transport/jsonrpc/ shared JSON-RPC 2.0 message handling
 transport/stdio/   JSON-RPC 2.0 over newline-delimited stdio
+transport/web/     HTTP library API + WebSocket JSON-RPC for browsers
 cmd/asmgraph/      CLI
 diag/              structured diagnostics
+web/               browser IDE (React, TypeScript, Vite, React Flow, Monaco)
 examples/          puzzles, solutions, plugin example
 docs/              documentation
 ```
@@ -112,5 +125,6 @@ docs/              documentation
 | [Execution model](docs/execution.md) | Ticks, communication, ANY/LAST, completion, deadlock and cycle detection |
 | [Plugins and validators](docs/plugins.md) | Writing and registering cell types; custom validators |
 | [JSON-RPC protocol](docs/protocol.md) | Commands, events, snapshots |
+| [Web IDE](docs/web.md) | Browser IDE: setup, HTTP/WebSocket API, frontend architecture, testing, extending |
 | [Frontends and debugging](docs/frontends.md) | Integration guide, debugging workflow, puzzle editors |
 | [Known limitations](docs/limitations.md) | What V1 deliberately does not do |

@@ -1,0 +1,225 @@
+@import 'tailwindcss';
+@import '@xyflow/react/dist/base.css';
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Semantic tokens. Colors carry meaning (run/warn/ok/bad/accent); every
+   status is also shown with a glyph and text so color is never the only cue. */
+:root {
+  --c-bg: #ecebe6;
+  --c-panel: #f6f5f1;
+  --c-panel-2: #e4e2dc;
+  --c-raised: #ffffff;
+  --c-line: #cfcbc2;
+  --c-line-strong: #a9a49a;
+  --c-fg: #1f2226;
+  --c-fg-muted: #5f646c;
+  --c-fg-faint: #8a8e95;
+  --c-accent: #1f7a8c;
+  --c-run: #2f64a8;
+  --c-warn: #a86b00;
+  --c-ok: #2f7d38;
+  --c-bad: #b3362c;
+  --c-grid: #d8d5ce;
+  --c-wire: #8d897f;
+}
+
+.dark {
+  --c-bg: #0e1012;
+  --c-panel: #14171a;
+  --c-panel-2: #1a1e22;
+  --c-raised: #1e2328;
+  --c-line: #2a3037;
+  --c-line-strong: #3b434c;
+  --c-fg: #dcd8cf;
+  --c-fg-muted: #8f949c;
+  --c-fg-faint: #5f656d;
+  --c-accent: #5cb8c9;
+  --c-run: #79a6e0;
+  --c-warn: #e0aa48;
+  --c-ok: #74c27a;
+  --c-bad: #e8695e;
+  --c-grid: #1c2024;
+  --c-wire: #59616a;
+}
+
+@theme inline {
+  --color-bg: var(--c-bg);
+  --color-panel: var(--c-panel);
+  --color-panel-2: var(--c-panel-2);
+  --color-raised: var(--c-raised);
+  --color-line: var(--c-line);
+  --color-line-strong: var(--c-line-strong);
+  --color-fg: var(--c-fg);
+  --color-fg-muted: var(--c-fg-muted);
+  --color-fg-faint: var(--c-fg-faint);
+  --color-accent: var(--c-accent);
+  --color-run: var(--c-run);
+  --color-warn: var(--c-warn);
+  --color-ok: var(--c-ok);
+  --color-bad: var(--c-bad);
+  --color-wire: var(--c-wire);
+  --font-sans: 'IBM Plex Sans', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+html {
+  overflow: hidden;
+}
+
+body {
+  margin: 0;
+  background: var(--c-bg);
+  color: var(--c-fg);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+/* Thin, quiet scrollbars. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--c-line-strong) transparent;
+}
+
+:focus-visible {
+  outline: 1px solid var(--c-accent);
+  outline-offset: 1px;
+}
+
+.label-caps {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--c-fg-muted);
+}
+
+/* --- resizable panels --- */
+[data-separator] {
+  background: var(--c-line);
+  transition: background 120ms;
+}
+[data-separator][aria-orientation='vertical'] {
+  width: 1px;
+}
+[data-separator][aria-orientation='horizontal'] {
+  height: 1px;
+}
+[data-separator]:hover,
+[data-separator][data-separator-state='drag'] {
+  background: var(--c-accent);
+}
+
+/* --- React Flow --- */
+.react-flow {
+  --xy-background-color: var(--c-bg);
+  --xy-node-border-radius: 2px;
+  --xy-edge-stroke: var(--c-wire);
+  --xy-edge-stroke-selected: var(--c-accent);
+  --xy-connectionline-stroke: var(--c-accent);
+  --xy-controls-button-background-color: var(--c-panel);
+  --xy-controls-button-background-color-hover: var(--c-panel-2);
+  --xy-controls-button-color: var(--c-fg);
+  --xy-controls-button-border-color: var(--c-line);
+  --xy-minimap-background-color: var(--c-panel);
+  --xy-selection-background-color: color-mix(in srgb, var(--c-accent) 12%, transparent);
+  --xy-selection-border: 1px dashed var(--c-accent);
+}
+.react-flow__attribution {
+  display: none;
+}
+.react-flow__controls {
+  border: 1px solid var(--c-line);
+  box-shadow: none;
+}
+.react-flow__handle {
+  width: 14px;
+  height: 14px;
+  border-radius: 2px;
+  min-width: 0;
+  min-height: 0;
+}
+.react-flow__edge.selected .react-flow__edge-path,
+.react-flow__edge:focus .react-flow__edge-path {
+  stroke: var(--c-accent);
+}
+
+@keyframes transfer-flash {
+  0% {
+    stroke: var(--c-accent);
+    stroke-width: 4;
+  }
+  100% {
+    stroke: var(--c-wire);
+    stroke-width: 2;
+  }
+}
+.edge-flash {
+  animation: transfer-flash 600ms ease-out;
+}
+@keyframes value-pop {
+  0% {
+    opacity: 1;
+  }
+  80% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0.35;
+  }
+}
+.value-pop {
+  animation: value-pop 900ms ease-out forwards;
+}
+@media (prefers-reduced-motion: reduce) {
+  .edge-flash,
+  .value-pop {
+    animation: none;
+  }
+}
+
+/* --- Monaco decorations --- */
+.asm-active-line {
+  background: color-mix(in srgb, var(--c-run) 18%, transparent);
+}
+.asm-blocked-line {
+  background: color-mix(in srgb, var(--c-warn) 20%, transparent);
+}
+.asm-pc-glyph::before {
+  content: '▶';
+  color: var(--c-run);
+  font-size: 11px;
+  padding-left: 2px;
+}
+.asm-pc-glyph-blocked::before {
+  content: '⏸';
+  color: var(--c-warn);
+  font-size: 11px;
+  padding-left: 2px;
+}
+.asm-bp-glyph::after {
+  content: '';
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  margin-left: 4px;
+  border-radius: 50%;
+  background: var(--c-bad);
+}
+.asm-bp-hint:hover::after {
+  content: '';
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  margin-left: 4px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--c-bad) 40%, transparent);
+}

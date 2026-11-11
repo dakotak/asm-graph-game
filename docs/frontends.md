@@ -1,8 +1,9 @@
 # Frontends and debugging
 
-V1 has no graphical frontend. The engine was designed so that browser
-graph editors, TUIs, desktop apps, IDE extensions, and automation can all
-be built on it without copying game rules.
+The repository includes a browser IDE (`asmgraph web`, see
+[web.md](web.md)). The engine was designed so that other frontends (TUIs,
+desktop apps, IDE extensions, automation) can be built on it without
+copying game rules.
 
 ## Integration options
 
@@ -11,7 +12,7 @@ be built on it without copying game rules.
 | Spawn `asmgraph serve --stdio` and speak JSON-RPC | Any language. Editors, TUIs, desktop apps. |
 | Import `asmgraph/engine` and use `engine.Session` | Go frontends and tools |
 | Run `asmgraph test --json` | CI, graders, batch evaluation |
-| Wrap `protocol.Service` in HTTP/WebSocket | Browser frontends, in the future. The service API is already independent of the transport. |
+| Connect to `asmgraph web` (`/api/ws` plus the HTTP library API) | Browser frontends. This is what the bundled web IDE uses. |
 
 ## Building a player UI
 

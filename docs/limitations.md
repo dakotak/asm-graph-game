@@ -1,8 +1,13 @@
 # Known limitations (V1)
 
-- **No graphical frontend.** There is only the CLI and JSON-RPC.
-- **No HTTP/WebSocket transport yet.** `protocol.Service` is ready for
-  one.
+- **The web IDE is single-user and local.** It binds to loopback, has no
+  authentication, and stores solutions as files. Exposing it beyond your
+  machine (`--addr`, `--allow-host`) is only for trusted networks.
+- **Puzzle editing in the browser** is not implemented. Puzzles are
+  edited as YAML files. The backend already provides `validatePuzzle` and
+  `exportPuzzle` for a future editor.
+- **Completion status** ("solved") is stored in the browser's
+  localStorage, not on the server.
 - **Native plugins are fragile.** They need Linux, macOS, or FreeBSD with
   cgo, and the plugin must be built with the exact toolchain and
   dependency versions of the host. Prefer static registration. There are

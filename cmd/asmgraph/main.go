@@ -12,14 +12,22 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"log"
+	"net"
+	"net/http"
 	"os"
+	"os/signal"
+	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
+	"time"
 
 	"asmgraph/cell"
 	"asmgraph/cells"
@@ -30,6 +38,7 @@ import (
 	"asmgraph/puzzle"
 	"asmgraph/solution"
 	"asmgraph/transport/stdio"
+	webtransport "asmgraph/transport/web"
 )
 
 // Exit codes.
@@ -76,6 +85,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return c.types(rest)
 	case "serve":
 		return c.serve(rest)
+	case "web":
+		return c.web(rest)
 	case "version", "--version", "-v":
 		fmt.Fprintf(stdout, "%s %s (protocol %s)\n", protocol.ServerName, protocol.ServerVersion, protocol.Version)
 		return exitOK
@@ -98,6 +109,7 @@ commands:
   test     PUZZLE SOLUTION     run every test case
   types                        list registered cell types and instructions
   serve --stdio                serve JSON-RPC 2.0 on stdin/stdout
+  web                          serve the browser IDE and HTTP/WebSocket API
   version                      print version information
 
 common flags:
@@ -514,6 +526,64 @@ func (c *cli) serve(args []string) int {
 	srv := stdio.New(c.stdin, c.stdout, c.stderr, reg)
 	srv.Service().AllowFiles = !*noFiles
 	if err := srv.Serve(); err != nil && !errors.Is(err, io.EOF) {
+		fmt.Fprintf(c.stderr, "asmgraph: %v\n", err)
+		return exitUsage
+	}
+	return exitOK
+}
+
+func (c *cli) web(args []string) int {
+	fs := c.flags("web")
+	addr := fs.String("addr", "127.0.0.1:7357", "listen address (keep it on localhost unless you add --allow-host)")
+	puzzles := fs.String("puzzles", "examples/puzzles", "directory of puzzle YAML files")
+	solutions := fs.String("solutions", "solutions", "directory where solutions are saved")
+	static := fs.String("static", "web/dist", "built frontend directory (empty to disable)")
+	var allowHosts multiFlag
+	fs.Var(&allowHosts, "allow-host", "extra Host/Origin name to accept (repeatable)")
+	if _, err := parse(fs, args); err != nil {
+		return exitUsage
+	}
+	reg, err := c.registry()
+	if err != nil {
+		fmt.Fprintf(c.stderr, "asmgraph: %v\n", err)
+		return exitUsage
+	}
+	staticDir := *static
+	if staticDir != "" {
+		if st, err := os.Stat(filepath.Join(staticDir, "index.html")); err != nil || st.IsDir() {
+			fmt.Fprintf(c.stderr, "asmgraph: no built frontend in %s (run `npm run build` in web/); serving the API only\n", staticDir)
+			staticDir = ""
+		}
+	}
+	var origins []string
+	for _, h := range allowHosts {
+		origins = append(origins, h, h+":*")
+	}
+	srv, err := webtransport.New(webtransport.Config{
+		Registry: reg, PuzzlesDir: *puzzles, SolutionsDir: *solutions, StaticDir: staticDir,
+		Logger:       log.New(c.stderr, "asmgraph: ", log.LstdFlags),
+		AllowedHosts: allowHosts, OriginPatterns: origins,
+	})
+	if err != nil {
+		fmt.Fprintf(c.stderr, "asmgraph: %v\n", err)
+		return exitUsage
+	}
+	ln, err := net.Listen("tcp", *addr)
+	if err != nil {
+		fmt.Fprintf(c.stderr, "asmgraph: %v\n", err)
+		return exitUsage
+	}
+	fmt.Fprintf(c.stderr, "asmgraph: serving on http://%s (puzzles: %s, solutions: %s)\n", ln.Addr(), *puzzles, *solutions)
+	hs := &http.Server{Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second}
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-stop
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = hs.Shutdown(ctx)
+	}()
+	if err := hs.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		fmt.Fprintf(c.stderr, "asmgraph: %v\n", err)
 		return exitUsage
 	}

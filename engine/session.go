@@ -39,6 +39,13 @@ type Session struct {
 	machine  *Machine
 	opts     Options
 	run      *runState
+	bps      map[string]map[int]bool
+}
+
+// Breakpoint identifies the source line a run paused before.
+type Breakpoint struct {
+	Cell string `json:"cell"`
+	Line int    `json:"line"`
 }
 
 type runState struct {
@@ -199,9 +206,46 @@ func (s *Session) Step(n int) (Status, int64, error) {
 		n = 1
 	}
 	for i := 0; i < n && !s.machine.status.Terminal(); i++ {
-		s.machine.Step()
+		if bp, hit := s.stepLocked(); hit && i < n-1 {
+			s.emitLocked(EventSimulationPaused, bp.Cell, pausedAt(s.machine.status, bp))
+			break
+		}
 	}
 	return s.machine.status, s.machine.tick, nil
+}
+
+// SetBreakpoints replaces the breakpoint set: cell id -> 1-based source
+// lines. Runs (RunAsync, Run, and multi-tick Step) pause after any tick
+// that moves a cell onto a breakpoint line, before that line executes.
+// Breakpoints only decide when a run stops; they never change results.
+func (s *Session) SetBreakpoints(bps map[string][]int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.bps = map[string]map[int]bool{}
+	for cell, lines := range bps {
+		if len(lines) == 0 {
+			continue
+		}
+		set := map[int]bool{}
+		for _, l := range lines {
+			set[l] = true
+		}
+		s.bps[cell] = set
+	}
+}
+
+// stepLocked advances one tick and reports a breakpoint hit, if any.
+func (s *Session) stepLocked() (Breakpoint, bool) {
+	s.machine.Step()
+	if len(s.bps) == 0 || s.machine.status.Terminal() {
+		return Breakpoint{}, false
+	}
+	cell, line, ok := s.machine.BreakpointHit(s.bps)
+	return Breakpoint{cell, line}, ok
+}
+
+func pausedAt(st Status, bp Breakpoint) map[string]any {
+	return map[string]any{"status": st, "reason": "breakpoint", "cell": bp.Cell, "line": bp.Line}
 }
 
 // Run executes synchronously until terminal or maxTicks more ticks
@@ -213,7 +257,12 @@ func (s *Session) Run(maxTicks int64) (*TestResult, error) {
 	if s.machine == nil {
 		return nil, ErrNotStarted
 	}
-	s.machine.Run(maxTicks)
+	for n := int64(0); !s.machine.status.Terminal() && (maxTicks <= 0 || n < maxTicks); n++ {
+		if bp, hit := s.stepLocked(); hit {
+			s.emitLocked(EventSimulationPaused, bp.Cell, pausedAt(s.machine.status, bp))
+			break
+		}
+	}
 	return s.machine.Result(), nil
 }
 
@@ -254,8 +303,18 @@ func (s *Session) RunAsync(maxTicks int64, delay time.Duration, onDone func(Stat
 				}
 				return
 			}
-			m.Step()
+			bp, hit := s.stepLocked()
 			n++
+			if hit {
+				s.run = nil
+				st := m.status
+				s.emitLocked(EventSimulationPaused, bp.Cell, pausedAt(st, bp))
+				s.mu.Unlock()
+				if onDone != nil {
+					onDone(st)
+				}
+				return
+			}
 			s.mu.Unlock()
 			if delay > 0 {
 				select {
@@ -335,6 +394,33 @@ func (s *Session) Result() (*TestResult, error) {
 		return nil, ErrNotStarted
 	}
 	return s.machine.Result(), nil
+}
+
+// RunTest runs one test case (by name or index) on a fresh machine. It
+// does not disturb the interactive machine.
+func (s *Session) RunTest(test string, opts Options) (*TestResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.bp == nil {
+		if l := s.compileLocked(); l.HasErrors() {
+			return nil, l
+		}
+	}
+	idx, err := s.bp.TestIndex(test)
+	if err != nil {
+		return nil, err
+	}
+	o := opts
+	o.Events, o.Sequence = nil, nil
+	res, err := RunTest(s.bp, idx, o)
+	if err != nil {
+		return nil, err
+	}
+	if s.sink != nil {
+		s.seq++
+		s.sink(Event{Seq: s.seq, Tick: res.Metrics.Ticks, Type: EventTestCompleted, Test: res.Test, Data: res})
+	}
+	return res, nil
 }
 
 // RunTests runs every test case on fresh machines. It does not disturb the

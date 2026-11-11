@@ -6,6 +6,7 @@ package protocol
 
 import (
 	"bytes"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"asmgraph/asm"
 	"asmgraph/cell"
 	"asmgraph/diag"
 	"asmgraph/engine"
@@ -177,6 +179,9 @@ func init() {
 		"getCell":        (*Service).getCell,
 		"getResult":      (*Service).getResult,
 		"runTests":       (*Service).runTests,
+		"runTest":        (*Service).runTest,
+		"setBreakpoints": (*Service).setBreakpoints,
+		"assemble":       (*Service).assemble,
 		"setEventLevel":  (*Service).setEventLevel,
 		"shutdown":       (*Service).doShutdown,
 	}
@@ -315,8 +320,113 @@ func DescribeTypes(reg *cell.Registry) []CellTypeInfo {
 	return out
 }
 
+// OperandKinds documents what each operand slot kind accepts. Editors use
+// it for completion and hover help instead of hard-coding the rules.
+var OperandKinds = map[string]string{
+	"source":      "a register, a port (P0-P3, ANY, LAST), or an integer literal in [-2147483648, 2147483647]",
+	"destination": "a register or a port (P0-P3, ANY, LAST)",
+	"target":      "a label, or a 0-based instruction index",
+}
+
+// PortInfo documents a port operand.
+type PortInfo struct {
+	Name        string `json:"name"`
+	Physical    bool   `json:"physical"`
+	Description string `json:"description"`
+}
+
+// Ports lists every port operand.
+var Ports = []PortInfo{
+	{"P0", true, "Physical port slot 0"},
+	{"P1", true, "Physical port slot 1"},
+	{"P2", true, "Physical port slot 2"},
+	{"P3", true, "Physical port slot 3"},
+	{"ANY", false, "Any connected port; lowest-numbered ready port wins. Sets LAST."},
+	{"LAST", false, "The port used by the most recent ANY transfer; blocks until one has happened."},
+}
+
+// Syntax documents the shared assembly syntax.
+var Syntax = map[string]any{
+	"comments":         []string{"#", ";"},
+	"labelSuffix":      ":",
+	"caseSensitive":    false,
+	"operandSeparator": ",",
+	"integerFormats":   []string{"decimal", "0x hex", "0b binary", "0o octal"},
+}
+
 func (s *Service) listCellTypes(json.RawMessage) (any, *Error) {
-	return map[string]any{"types": DescribeTypes(s.reg)}, nil
+	return map[string]any{
+		"types":        DescribeTypes(s.reg),
+		"operandKinds": OperandKinds,
+		"ports":        Ports,
+		"syntax":       Syntax,
+	}, nil
+}
+
+// AssembleParams configures assemble.
+type AssembleParams struct {
+	Type        string `json:"type"`
+	Source      string `json:"source"`
+	MemoryLimit int    `json:"memoryLimit,omitempty"`
+}
+
+// assemble compiles one program for a cell type without touching the
+// session. Frontends call it while the player types to get exact bytecode
+// sizes and diagnostics from the real assembler.
+func (s *Service) assemble(params json.RawMessage) (any, *Error) {
+	var p AssembleParams
+	if e := decode(params, &p); e != nil {
+		return nil, e
+	}
+	arch, ok := s.reg.Lookup(p.Type)
+	if !ok {
+		return nil, errf(CodeInvalidParams, "unknown cell type %q", p.Type)
+	}
+	isa := arch.ISA()
+	if isa == nil {
+		return nil, errf(CodeInvalidParams, "cell type %q is not programmable", p.Type)
+	}
+	if p.MemoryLimit < 0 || len(p.Source) > 1<<20 {
+		return nil, errf(CodeInvalidParams, "invalid memoryLimit or source too large")
+	}
+	out := map[string]any{"ok": true, "limit": p.MemoryLimit, "diagnostics": []diag.Diagnostic{}}
+	// Compile without a limit first so the true size is known even when the
+	// program does not fit.
+	res, errs := asm.Compile(p.Source, isa, asm.Options{})
+	if len(errs) > 0 {
+		var l diag.List
+		for _, e := range errs {
+			l = append(l, diag.Diagnostic{Severity: diag.Error, Code: "asm.error", Message: e.Msg, SourceLine: e.Pos.Line, SourceColumn: e.Pos.Column})
+		}
+		out["ok"], out["diagnostics"] = false, l
+		return out, nil
+	}
+	out["bytes"] = res.Program.Size()
+	out["instructions"] = len(res.Instructions)
+	out["hex"] = hex.EncodeToString(res.Program.Code)
+	var dis []engine.DisasmEntry
+	for i := range res.Instructions {
+		in := &res.Instructions[i]
+		dis = append(dis, engine.DisasmEntry{
+			Index: i, Address: int(in.Offset),
+			Bytes:      hex.EncodeToString(res.Program.Code[in.Offset : int(in.Offset)+in.Size]),
+			Text:       in.Format(isa),
+			SourceLine: res.SourceLines[i],
+		})
+	}
+	if dis == nil {
+		dis = []engine.DisasmEntry{}
+	}
+	out["disassembly"] = dis
+	if p.MemoryLimit > 0 && res.Program.Size() > p.MemoryLimit {
+		_, errs := asm.Compile(p.Source, isa, asm.Options{MemoryLimit: p.MemoryLimit})
+		var l diag.List
+		for _, e := range errs {
+			l = append(l, diag.Diagnostic{Severity: diag.Error, Code: "asm.memory", Message: e.Msg, SourceLine: e.Pos.Line, SourceColumn: e.Pos.Column})
+		}
+		out["ok"], out["diagnostics"] = false, l
+	}
+	return out, nil
 }
 
 func (s *Service) parsePuzzle(params json.RawMessage) (*puzzle.Puzzle, diag.List, *Error) {
@@ -570,6 +680,54 @@ func (s *Service) runTests(params json.RawMessage) (any, *Error) {
 		return nil, stateErr(err)
 	}
 	return res, nil
+}
+
+// RunTestParams configures runTest.
+type RunTestParams struct {
+	Test           TestSelector `json:"test"`
+	MaxTicks       int64        `json:"maxTicks,omitempty"`
+	CycleDetection bool         `json:"cycleDetection,omitempty"`
+}
+
+func (s *Service) runTest(params json.RawMessage) (any, *Error) {
+	var p RunTestParams
+	if e := decode(params, &p); e != nil {
+		return nil, e
+	}
+	res, err := s.sess.RunTest(string(p.Test), engine.Options{MaxTicks: p.MaxTicks, CycleDetection: p.CycleDetection})
+	if err != nil {
+		return nil, stateErr(err)
+	}
+	return res, nil
+}
+
+// BreakpointParams configures setBreakpoints: cell id -> source lines.
+type BreakpointParams struct {
+	Breakpoints map[string][]int `json:"breakpoints"`
+}
+
+func (s *Service) setBreakpoints(params json.RawMessage) (any, *Error) {
+	var p BreakpointParams
+	if e := decode(params, &p); e != nil {
+		return nil, e
+	}
+	n := 0
+	for cell, lines := range p.Breakpoints {
+		for _, l := range lines {
+			if l < 1 {
+				return nil, errf(CodeInvalidParams, "breakpoint line %d for cell %q must be >= 1", l, cell)
+			}
+			n++
+		}
+	}
+	if n > 10_000 {
+		return nil, errf(CodeInvalidParams, "too many breakpoints")
+	}
+	s.sess.SetBreakpoints(p.Breakpoints)
+	if p.Breakpoints == nil {
+		p.Breakpoints = map[string][]int{}
+	}
+	return map[string]any{"breakpoints": p.Breakpoints}, nil
 }
 
 // EventLevelParams configures setEventLevel.

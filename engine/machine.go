@@ -756,6 +756,23 @@ func (m *Machine) emitTerminal() {
 	m.emit(EventSimulationCompleted, "", m.Result())
 }
 
+// BreakpointHit reports the first cell (in puzzle order) that retired an
+// instruction during the last tick and whose next instruction is on one of
+// its breakpoint source lines. bps maps cell id -> set of source lines.
+func (m *Machine) BreakpointHit(bps map[string]map[int]bool) (string, int, bool) {
+	for _, c := range m.cells {
+		if !c.completed || c.halted || c.proc == nil || len(c.bp.Code) == 0 {
+			continue
+		}
+		if lines := bps[c.bp.ID]; lines != nil {
+			if l := c.bp.SourceLines[c.pc]; lines[l] {
+				return c.bp.ID, l, true
+			}
+		}
+	}
+	return "", 0, false
+}
+
 // Result returns the test result. It is final once Status is terminal.
 func (m *Machine) Result() *TestResult {
 	r := &TestResult{

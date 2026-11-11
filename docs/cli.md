@@ -105,6 +105,14 @@ Serves JSON-RPC 2.0 on stdin and stdout. See [protocol.md](protocol.md).
 `--no-files` turns off path-based loading, so clients must send YAML
 inline.
 
+## `web`
+
+Serves the browser IDE and its HTTP and WebSocket API. See [web.md](web.md).
+
+```
+asmgraph web [--addr 127.0.0.1:7357] [--puzzles examples/puzzles] [--solutions solutions] [--static web/dist] [--allow-host NAME]
+```
+
 ## `version`
 
 Prints the version and the protocol version.

@@ -7,8 +7,9 @@ JSON**. Each request, response, and notification is one line.
 - **stderr** carries logs.
 
 The commands are implemented by the transport-independent
-`protocol.Service`. An HTTP or WebSocket adapter would only need to frame
-the same `Call(method, params)` and event notifications.
+`protocol.Service` through `transport/jsonrpc`. `asmgraph web` exposes the
+same protocol over a WebSocket (`/api/ws`, one message per text frame,
+one session per connection); see [web.md](web.md).
 
 ## Framing
 
@@ -50,7 +51,8 @@ the same `Call(method, params)` and event notifications.
 | Method | Params | Result |
 |---|---|---|
 | `initialize` | — | `name`, `version`, `protocolVersion`, `bytecodeVersion`, `puzzleSchemaVersion`, `solutionSchemaVersion`, `cellApiVersion`, `nativePlugins`, `cellTypes`, `methods` |
-| `listCellTypes` | — | `{types: [{type, description, programmable, instructions[], registers[], config[]}]}` |
+| `listCellTypes` | — | `{types: [{type, description, programmable, instructions[], registers[], config[]}], operandKinds, ports, syntax}`. `operandKinds` documents each operand slot kind, `ports` describes P0–P3, ANY and LAST, and `syntax` gives comment characters and literal formats. |
+| `assemble` | `{type, source, memoryLimit?}` | `{ok, bytes?, limit, instructions?, hex?, disassembly?, diagnostics}`. Compiles one program without touching the session, for live editor feedback. `bytes` is reported even when over the limit. |
 | `validatePuzzle` | `{path}` or `{yaml}` | `{valid, diagnostics}`. Nothing is loaded. |
 | `loadPuzzle` | `{path}` or `{yaml}` | `{puzzle, diagnostics}`. Clears any solution and simulation. |
 | `loadSolution` | `{path}` or `{yaml}` | `{solution, diagnostics}`. Validates against the loaded puzzle. |
@@ -65,6 +67,8 @@ the same `Call(method, params)` and event notifications.
 | `getCell` | `{cell}` | `CellSnapshot` |
 | `getResult` | — | `TestResult` (partial while running) |
 | `runTests` | `{maxTicks?, cycleDetection?}` | `SuiteResult`. Uses separate fresh machines and does not disturb the interactive one. |
+| `runTest` | `{test: name\|index, maxTicks?, cycleDetection?}` | `TestResult` from a fresh machine. The interactive machine is untouched. |
+| `setBreakpoints` | `{breakpoints: {cell: [sourceLine…]}}` | `{breakpoints}`. `run` and multi-tick `step` pause after any tick that moves a cell onto a breakpoint line, before it executes. A `simulation.paused` event with `{reason: "breakpoint", cell, line}` is sent. Breakpoints never change results. |
 | `setEventLevel` | `{level: none\|lifecycle\|ticks\|all}` | `{level}` |
 | `shutdown` | — | `{}` |
 
@@ -94,7 +98,7 @@ Events are sent as notifications:
 | Type | Level | Data |
 |---|---|---|
 | `simulation.started` | lifecycle | `Snapshot` |
-| `simulation.paused` | lifecycle | `{status, reason}` |
+| `simulation.paused` | lifecycle | `{status, reason, cell?, line?}`. `reason` is `pause requested`, `tick budget reached`, or `breakpoint`. |
 | `simulation.reset` | lifecycle | — |
 | `simulation.completed` | lifecycle | `TestResult` |
 | `test.completed` | lifecycle | `TestResult` (from `runTests`) |

@@ -34,7 +34,9 @@ solution.yaml ─► solution.Parse ─► Solution.Validate(puzzle) ──► g
 | `validate` | Exact-output stream validation (outside the cells) | `vm` |
 | `engine` | `Prepare` → `Blueprint`; `Machine` (one test case); `RunTest`/`RunAll`; `Session` (stateful API) | everything above |
 | `protocol` | Transport-independent command dispatcher and event filtering | `engine` |
-| `transport/stdio` | JSON-RPC 2.0 framing | `protocol` |
+| `transport/jsonrpc` | JSON-RPC 2.0 message handling shared by all transports | `protocol` |
+| `transport/stdio` | JSON-RPC over newline-delimited stdin/stdout | `transport/jsonrpc` |
+| `transport/web` | HTTP library API, WebSocket JSON-RPC sessions, static frontend ([web.md](web.md)) | `transport/jsonrpc` |
 | `cmd/asmgraph` | CLI | everything |
 
 There are no import cycles. The engine does not import any transport,
