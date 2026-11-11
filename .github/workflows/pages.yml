@@ -1,0 +1,100 @@
+# Builds the web IDE (the Go engine compiled to WebAssembly plus the static
+# frontend), tests it, and publishes it to GitHub Pages.
+#
+# - Pull requests: build and test only.
+# - Pushes to main and manual runs: build, test, then deploy.
+#
+# One-time setup: Settings → Pages → "Build and deployment" → Source:
+# "GitHub Actions".
+name: Web IDE (GitHub Pages)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Never cancel a deployment halfway; a newer push queues behind it.
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: Build and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      # wasm_exec.js must come from the same toolchain that builds the
+      # engine; Go 1.24+ ships it in lib/wasm.
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.26'
+          cache-dependency-path: go.sum
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Go tests
+        run: |
+          go vet ./...
+          GOOS=js GOARCH=wasm go vet ./cmd/asmgraph-wasm
+          go test -race ./...
+
+      - name: Install frontend dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Unit tests (builds the engine; some tests run it)
+        working-directory: web
+        run: npm test
+
+      - name: Build the static site
+        working-directory: web
+        run: npm run build
+
+      - name: Install Playwright's Chromium
+        working-directory: web
+        run: npx playwright install --with-deps chromium
+
+      - name: End-to-end tests against the static build
+        working-directory: web
+        run: npm run e2e
+
+      - name: Keep the Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-report
+          path: web/test-results/
+          retention-days: 7
+
+      - name: Package the site for Pages
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: web/dist
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5
