@@ -1,0 +1,17 @@
+schema_version: 2
+puzzle: stack-reverse
+
+# Every hardware rule broken at once, to show the diagnostics:
+#   - a type the puzzle does not allow (stack_processor)
+#   - a port count beyond what the standard processor supports (9 > 8)
+#   - a stack with a POP port only (the stack plugin needs a PUSH port)
+#   - a stack capacity above the puzzle's limit (16 > 12)
+#   - total cost over the budget of 50, and more than 3 nodes
+hardware:
+  - {id: cpu, type: standard, port_count: 9, program_memory: 32}
+  - {id: cpu2, type: standard, port_count: 4, program_memory: 32}
+  - {id: helper, type: stack_processor, program_memory: 16}
+  - {id: stack, type: stack, port_count: 2, port_functions: [POP, POP], config: {capacity: 16}}
+
+connections: []
+programs: {}

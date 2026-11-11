@@ -5,12 +5,13 @@
 // shown here comes from the Go assembler.
 import clsx from 'clsx'
 import { useEffect, useMemo, useRef } from 'react'
-import { languageId, monaco, registerLanguages } from '../../editor/monaco'
+import { languageId, monaco, registerLanguages, setPortContext } from '../../editor/monaco'
 import { controller } from '../../services/controller'
 import { usePrefs } from '../../state/prefs'
 import { useSim } from '../../state/sim'
 import { useUi } from '../../state/ui'
-import { cellType, useWorkspace } from '../../state/workspace'
+import { cellType, findCell, useWorkspace } from '../../state/workspace'
+import { NodeEditor } from '../HardwarePanel'
 import { Button } from '../ui'
 import type { Diagnostic } from '../../api/types'
 
@@ -26,7 +27,7 @@ export default function EditorPane() {
   const catalog = useWorkspace((s) => s.catalog)
   const puzzleId = useWorkspace((s) => s.puzzleDoc?.puzzle.id ?? null)
   const cellId = useWorkspace((s) => s.selectedCell)
-  const def = useWorkspace((s) => s.puzzleDoc?.puzzle.cells.find((c) => c.id === s.selectedCell))
+  const def = useWorkspace((s) => findCell(s.cells, s.selectedCell))
   const typeInfo = useMemo(() => (def ? cellType(catalog, def.type) : undefined), [catalog, def])
   const programmable = !!typeInfo?.programmable
   const theme = usePrefs((s) => s.theme)
@@ -96,6 +97,28 @@ export default function EditorPane() {
   useEffect(() => {
     monaco.editor.setTheme(theme === 'dark' ? 'asmgraph-dark' : 'asmgraph-light')
   }, [theme])
+
+  // Completion and hover need each model's cell: its port count and what
+  // each port is connected to.
+  useEffect(() => {
+    setPortContext((model) => {
+      let cell: string | undefined
+      for (const [id, m] of models.current) if (m === model) cell = id
+      const ws = useWorkspace.getState()
+      const c = findCell(ws.cells, cell)
+      if (!c) return { count: 4 }
+      return {
+        count: c.portCount,
+        describe: (i) => {
+          const conn = ws.solution?.connections.find((k) => (k.from.cell === c.id && k.from.port === `P${i}`) || (k.to.cell === c.id && k.to.port === `P${i}`))
+          if (!conn) return 'not connected'
+          const peer = conn.from.cell === c.id && conn.from.port === `P${i}` ? conn.to : conn.from
+          const fn = findCell(ws.cells, peer.cell)?.portFunctions?.[Number(peer.port.slice(1))]
+          return `connected to ${peer.cell}.${peer.port}${fn ? ` (${fn})` : ''}`
+        },
+      }
+    })
+  }, [])
 
   // A new puzzle discards all models.
   useEffect(() => {
@@ -225,7 +248,18 @@ export default function EditorPane() {
       <EditorHeader />
       <div className="relative min-h-0 flex-1">
         <div ref={host} className={clsx('absolute inset-0', !programmable && 'invisible')} data-testid="monaco-host" />
-        {!programmable && (
+        {!programmable && def?.player && (
+          // Passive hardware has no program: configure it instead.
+          <div className="absolute inset-0 overflow-auto p-4" data-testid="hardware-config">
+            <p className="mb-3 text-fg-muted">
+              <span className="font-mono text-fg">{def.id}</span> is passive hardware and runs no program. {typeInfo?.description}
+            </p>
+            <div className="max-w-md">
+              <NodeEditor id={def.id} />
+            </div>
+          </div>
+        )}
+        {!programmable && !def?.player && (
           <div className="absolute inset-0 flex items-center justify-center p-6 text-center text-fg-muted">
             {def ? (
               <div>
@@ -244,19 +278,19 @@ export default function EditorPane() {
 
 function EditorHeader() {
   const cellId = useWorkspace((s) => s.selectedCell)
-  const def = useWorkspace((s) => s.puzzleDoc?.puzzle.cells.find((c) => c.id === s.selectedCell))
+  const def = useWorkspace((s) => findCell(s.cells, s.selectedCell))
   const assemble = useWorkspace((s) => (cellId ? s.assemble[cellId] : undefined))
   const source = useWorkspace((s) => (cellId ? s.solution?.programs[cellId] : undefined))
   const catalog = useWorkspace((s) => s.catalog)
   const programmable = def ? (cellType(catalog, def.type)?.programmable ?? false) : false
-  const limit = def?.program_memory ?? 0
+  const limit = def?.programMemory ?? 0
   const stale = assemble && assemble.source !== source
   const bytes = assemble?.bytes
   const over = bytes !== undefined && bytes > limit
   const errors = assemble ? assemble.diagnostics.filter((d) => d.severity === 'error').length : 0
   return (
     <div className="flex h-9 shrink-0 items-center gap-3 border-b border-line px-3">
-      <span className="label-caps">Program</span>
+      <span className="label-caps">{!programmable && def?.player ? 'Hardware' : 'Program'}</span>
       <span className="font-mono text-[12px] text-fg">{cellId ?? '—'}</span>
       {def && <span className="font-mono text-[10px] tracking-widest text-fg-muted uppercase">{def.type}</span>}
       {programmable && (

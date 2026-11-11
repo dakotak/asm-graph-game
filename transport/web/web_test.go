@@ -145,7 +145,7 @@ func TestHostCheck(t *testing.T) {
 	if resp.StatusCode != 403 {
 		t.Fatalf("foreign host accepted: %d", resp.StatusCode)
 	}
-	if h := getJSON(t, ts.URL+"/api/health", 200); h["protocolVersion"] != "1" {
+	if h := getJSON(t, ts.URL+"/api/health", 200); h["protocolVersion"] != "2" {
 		t.Fatal(h)
 	}
 }
@@ -173,7 +173,7 @@ func TestStatelessRPC(t *testing.T) {
 	if res["ok"] != false || res["bytes"] != float64(7) || d["sourceLine"] != float64(2) {
 		t.Fatalf("over limit: %v", r)
 	}
-	r = call(`{"jsonrpc":"2.0","id":3,"method":"assemble","params":{"type":"stack","source":"SAV"}}`)
+	r = call(`{"jsonrpc":"2.0","id":3,"method":"assemble","params":{"type":"stack_processor","source":"SAV"}}`)
 	if r["result"].(map[string]any)["ok"] != false {
 		t.Fatalf("SAV on stack: %v", r)
 	}
@@ -184,7 +184,7 @@ func TestStatelessRPC(t *testing.T) {
 	}
 	r = call(`{"jsonrpc":"2.0","id":5,"method":"listCellTypes"}`)
 	lt := r["result"].(map[string]any)
-	if lt["operandKinds"] == nil || len(lt["ports"].([]any)) != 6 || len(lt["types"].([]any)) != 4 {
+	if lt["operandKinds"] == nil || len(lt["ports"].([]any)) != 3 || len(lt["types"].([]any)) != 5 {
 		t.Fatalf("listCellTypes: %v", lt)
 	}
 	if !strings.Contains(fmt.Sprint(lt["types"]), "name:BAK") {
@@ -264,7 +264,7 @@ func load(t *testing.T, w *wsClient, puzzle, sol string) {
 func TestWebSocketSession(t *testing.T) {
 	ts, _ := newServer(t, 0)
 	w := dial(t, ts)
-	if r := w.result("initialize", nil); r["protocolVersion"] != "1" {
+	if r := w.result("initialize", nil); r["protocolVersion"] != "2" {
 		t.Fatal(r)
 	}
 	// File paths are not accepted from browsers.
@@ -373,5 +373,92 @@ func TestStaticSPA(t *testing.T) {
 		if !strings.Contains(b.String(), want) {
 			t.Errorf("%s: got %q", path, b.String())
 		}
+	}
+}
+
+func post(t *testing.T, url, yaml string) (int, map[string]any) {
+	t.Helper()
+	body, _ := json.Marshal(map[string]string{"yaml": yaml})
+	resp, err := http.Post(url, "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var m map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&m)
+	return resp.StatusCode, m
+}
+
+func TestScoresAndPersonalBests(t *testing.T) {
+	ts, _ := newServer(t, 0)
+	url := ts.URL + "/api/puzzles/polynomial-design/scores"
+	cheap, _ := os.ReadFile("../../examples/solutions/polynomial-design-cheap.yaml")
+	fast, _ := os.ReadFile("../../examples/solutions/polynomial-design-fast.yaml")
+
+	code, r := post(t, url, string(cheap))
+	if code != 200 || r["passed"] != true || len(r["improved"].([]any)) != 3 {
+		t.Fatalf("cheap: %d %v", code, r)
+	}
+	if s := r["score"].(map[string]any); s["cost"] != float64(20) || s["bytes"] != float64(12) {
+		t.Errorf("score computed by the server: %v", s)
+	}
+	code, r = post(t, url, string(fast))
+	if code != 200 || fmt.Sprint(r["improved"]) != "[ticks]" {
+		t.Fatalf("fast: %d %v", code, r)
+	}
+	bests := getJSON(t, url, 200)["bests"].(map[string]any)
+	if bests["cost"].(map[string]any)["score"].(map[string]any)["cost"] != float64(20) ||
+		bests["ticks"].(map[string]any)["score"].(map[string]any)["cost"] != float64(54) {
+		t.Errorf("bests: %v", bests)
+	}
+	best := getJSON(t, url+"/ticks/solution", 200)
+	if !strings.Contains(best["yaml"].(string), "double1") {
+		t.Errorf("ticks best should be the pipeline: %v", best)
+	}
+	getJSON(t, url+"/speed/solution", 400)
+
+	// A failing solution is not scored and changes nothing.
+	broken := strings.Replace(string(cheap), "ADD 3", "ADD 4", 1)
+	code, r = post(t, url, broken)
+	if code != 200 || r["passed"] != false || r["score"] != nil || len(r["improved"].([]any)) != 0 {
+		t.Fatalf("failing: %d %v", code, r)
+	}
+	// An invalid one is rejected with diagnostics.
+	code, r = post(t, url, strings.Replace(string(cheap), "port_count: 2", "port_count: 3", 1))
+	if code != 422 || !strings.Contains(fmt.Sprint(r["diagnostics"]), "2 ports") {
+		t.Fatalf("invalid: %d %v", code, r)
+	}
+	// The library summary reports hardware puzzles and their bests.
+	for _, p := range getJSON(t, ts.URL+"/api/puzzles", 200)["puzzles"].([]any) {
+		m := p.(map[string]any)
+		if m["id"] == "polynomial-design" && (m["hardware"] != true || m["bests"] == nil) {
+			t.Errorf("summary: %v", m)
+		}
+	}
+}
+
+func TestHardwareOverWebSocket(t *testing.T) {
+	ts, _ := newServer(t, 0)
+	w := dial(t, ts)
+	puz, _ := os.ReadFile("../../examples/puzzles/stack-reverse.yaml")
+	r := w.result("loadPuzzle", map[string]any{"yaml": string(puz)})
+	if cat, ok := r["hardware"].([]any); !ok || len(cat) != 2 {
+		t.Fatalf("catalog: %v", r["hardware"])
+	}
+	sol, _ := os.ReadFile("../../examples/solutions/stack-reverse.yaml")
+	r = w.result("loadSolution", map[string]any{"yaml": string(sol)})
+	if h := r["hardware"].(map[string]any); h["totalCost"] != float64(32) || h["maxCost"] != float64(50) {
+		t.Fatalf("report: %v", h)
+	}
+	// An invalid solution still returns the hardware report with its errors.
+	bad := strings.Replace(string(sol), "capacity: 9", "capacity: 20", 1)
+	e, _ := w.call("loadSolution", map[string]any{"yaml": bad})["error"].(map[string]any)
+	data := e["data"].(map[string]any)
+	if data["hardware"] == nil || !strings.Contains(fmt.Sprint(data["diagnostics"]), "capacity at most 12") {
+		t.Fatalf("invalid: %v", e)
+	}
+	a := w.result("assemble", map[string]any{"type": "standard", "source": "MOV P0, P5", "ports": 4})
+	if a["ok"] != false || !strings.Contains(fmt.Sprint(a["diagnostics"]), "port P5 does not exist") {
+		t.Errorf("assemble with ports: %v", a)
 	}
 }

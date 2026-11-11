@@ -83,14 +83,16 @@ communicates blocks forever. The engine records why, for example:
 - `cannot write to P2: port is not connected`
 - `waiting to write to P1: b.P0 is not ready to read`
 - `cannot read from LAST: LAST is not set: no ANY transfer has completed on this cell yet`
+- `waiting to read from P2: stack.P1 (POP) is not ready to write` (the stack is empty)
+- `cannot write to P0: stack.P1 is a POP port, which only sends values`
 
 A permanently blocked cell does not fail the test if other cells can still
 produce the required output.
 
 ### ANY and LAST
 
-- `ANY` can use any of the cell's four physical ports. Only connected
-  ports can ever match.
+- `ANY` can use any of the cell's configured physical ports (`P0` to
+  `P(n-1)`). Only connected ports can ever match.
 - After a transfer through `ANY` (read or write), `LAST` is set to the
   physical port that was used.
 - `LAST` means that port. Until an `ANY` transfer has happened, `LAST`
@@ -103,8 +105,9 @@ All candidate transfers are collected: connections where one end has a
 write request and the other end has a read request that both include the
 connected ports. Each candidate gets a rank on each side:
 
-- **0** if that side named one port (`P0`–`P3`, or `LAST`)
-- **the port index** if that side used `ANY` (P0 = 0 … P3 = 3)
+- **0** if that side named one port (`P0`, `P1`, …, or `LAST`)
+- **the port index** if that side used `ANY` (P0 = 0, P1 = 1, …)
+- **the port index** for a passive peripheral's offer (see below)
 
 Candidates are accepted greedily in order of **(reader rank, writer
 rank)**. A candidate is skipped if its writer or reader is already
@@ -124,10 +127,32 @@ So the result depends only on the requests, never on the order of cells in
 the puzzle or of connections in the solution. The engine tests check this
 by reversing the connection order.
 
+### Passive peripherals
+
+A peripheral (for example the passive `stack`) does not make one request.
+Each tick it **offers** an operation on each port that can act now: a
+stack offers a read on its `PUSH` ports while not full, a write of its
+top value on `POP` and `PEEK` ports while not empty, and a write of its
+depth on `SIZE` ports. The offers depend only on the peripheral's own
+state.
+
+Offers take part in the same candidate list, ranked by their port index,
+and the same rule applies: **a cell completes at most one transfer per
+tick**, peripherals included. So when two processors push into a stack in
+the same tick, the lower-numbered stack port goes first and the other
+waits a tick; when a push and a pop are both possible, the ranks decide
+which happens. Unmatched offers change nothing. A test in
+`engine/hardware_test.go` lists the hardware and connections in reverse
+order and checks that the transfers are identical.
+
 TIS-100 was the conceptual reference here. These rules are this engine's
 own documented behaviour; they do not claim to match TIS-100 exactly.
 
 ## Streams
+
+**Port counts.** Every cell has its own number of ports. Schema-v1 cells
+always have four; player-built hardware and v2 cells have whatever their
+configuration says (see [hardware.md](hardware.md#ports)).
 
 **Input cells** offer the next value of their stream through `ANY` every
 tick until the stream is exhausted. Each value is delivered exactly once.

@@ -2,13 +2,15 @@
 // execution; this only produces a readable starting arrangement. dagre
 // breaks cycles internally, so cyclic topologies are fine.
 import { graphlib, layout } from '@dagrejs/dagre'
-import type { CellDef, Connection } from '../api/types'
+import type { Connection } from '../api/types'
 import type { Position } from './solution'
 
 export const NODE_WIDTH = 220
 export const NODE_HEIGHT = 150
 
-export function autoLayout(cells: CellDef[], connections: Connection[], isInput: (c: CellDef) => boolean, isOutput: (c: CellDef) => boolean): Record<string, Position> {
+type LayoutCell = { id: string; type: string; config?: Record<string, unknown> }
+
+export function autoLayout<C extends LayoutCell>(cells: C[], connections: Connection[], isInput: (c: C) => boolean, isOutput: (c: C) => boolean): Record<string, Position> {
   const g = new graphlib.Graph({ multigraph: true })
   g.setGraph({ rankdir: 'LR', nodesep: 50, ranksep: 90, marginx: 20, marginy: 20 })
   g.setDefaultEdgeLabel(() => ({}))
@@ -35,7 +37,7 @@ export function autoLayout(cells: CellDef[], connections: Connection[], isInput:
   if (connections.length === 0) {
     // Without edges dagre stacks everything in one column; use three columns.
     const middle = cells.filter((c) => !isInput(c) && !isOutput(c))
-    const col = (list: CellDef[], x: number) =>
+    const col = (list: C[], x: number) =>
       list.forEach((c, i) => {
         pos[c.id] = { x, y: i * (NODE_HEIGHT + 40) }
       })

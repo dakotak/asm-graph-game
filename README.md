@@ -3,15 +3,21 @@
 A headless, deterministic engine for an assembly-programming puzzle game.
 It is inspired by TIS-100, but the machine is a **graph**, not a grid:
 
-- A puzzle supplies a fixed set of **cells** (standard processors, stack
-  processors, input and output streams, or plugin architectures).
-- The player **connects ports** between cells and **writes assembly** for
-  the programmable ones.
-- Programs compile to **bytecode**, and every cell has a puzzle-defined
+- A puzzle supplies **cells** (input and output streams, and possibly
+  processors), and may let the player **build their own hardware** from a
+  catalog: processors, passive peripherals such as a stack, or plugin
+  architectures, within the puzzle's budget and limits.
+- The player configures that hardware (port counts, program memory, a
+  stack's port functions), **connects ports** between cells, and **writes
+  assembly** for the programmable ones.
+- Programs compile to **bytecode**, and every processor has a
   **program-memory budget in bytes**. Tight budgets push the player to
   spread the work across cells.
 - A tick-based simulator runs the solution against every test case on a
   fresh machine and reports pass/fail, deadlocks, cycles, and metrics.
+- A passing solution is scored on three independent dimensions:
+  **hardware cost**, **worst-case ticks**, and **program bytes**, with a
+  personal best kept for each.
 
 Each puzzle and **all of its test cases live in one YAML file**. The
 player's solution (connections and programs) is a **separate YAML file**.
@@ -81,12 +87,17 @@ go test ./...
 | [`combine-streams`](examples/puzzles/combine-streams.yaml) | Two input streams and cell-to-cell exchange without deadlock |
 | [`reverse-sequences`](examples/puzzles/reverse-sequences.yaml) | A task that needs the stack processor |
 | [`distributed-polynomial`](examples/puzzles/distributed-polynomial.yaml) | 8-byte memory limits force the program across three cells |
+| [`stack-reverse`](examples/puzzles/stack-reverse.yaml) | Player-built hardware: a processor plus a **passive stack** with configured PUSH/POP ports, under a budget |
+| [`polynomial-design`](examples/puzzles/polynomial-design.yaml) | Constrained design: a cheap single processor or a fast (expensive) pipeline; two solutions trade cost for ticks |
 | [`plugins/multiplier`](examples/plugins/multiplier) | A third-party cell type, linked statically or loaded as a native Go plugin |
 
 Working solutions are in [`examples/solutions`](examples/solutions). The
 files in [`examples/solutions/invalid`](examples/solutions/invalid) show
 the diagnostics for bad topology and assembly, a program that is too large,
-and a deadlock.
+a deadlock, and hardware that breaks a puzzle's rules and budget.
+
+The first five puzzles use schema version 1 (fixed topology) and still
+run unchanged; `asmgraph migrate` converts them to version 2.
 
 ## Repository layout
 
@@ -94,13 +105,14 @@ and a deadlock.
 vm/                word semantics, ports, ISA descriptions, bytecode encode/decode
 asm/               shared assembly parser and ISA-driven compiler
 cell/              plugin contracts (Architecture, Processor, Device) and registry
-cells/             built-in cells: standard, stack, input, output (+ ExecCore)
+cells/             built-in cells: standard, stack_processor, passive stack, input, output (+ ExecCore)
 plugins/           static and native Go plugin loaders
 graph/             topology: ports, connections, validation
 puzzle/            puzzle YAML schema, loading, validation
 solution/          solution YAML schema, loading, validation
 validate/          exact-output stream validation
 engine/            blueprint, deterministic machine, runner, session API
+scoring/           score comparison (per dimension, Pareto) and personal-best storage
 protocol/          transport-independent command/event service
 transport/jsonrpc/ shared JSON-RPC 2.0 message handling
 transport/stdio/   JSON-RPC 2.0 over newline-delimited stdio
@@ -118,6 +130,7 @@ docs/              documentation
 |---|---|
 | [Architecture](docs/architecture.md) | Packages, data flow, design decisions |
 | [CLI reference](docs/cli.md) | Commands, flags, exit codes, JSON output |
+| [Player-designed hardware](docs/hardware.md) | Hardware catalog and constraints, port counts, the passive stack, cost model, scoring, v1 migration |
 | [Puzzle format](docs/puzzle-format.md) | Puzzle YAML schema, validation, authoring |
 | [Solution format](docs/solution-format.md) | Solution YAML schema and validation |
 | [Assembly language](docs/assembly.md) | Syntax, operands, instruction reference, integer semantics |

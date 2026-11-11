@@ -115,7 +115,7 @@ func yamlParam(t *testing.T, path string) string {
 func TestJSONRPCSession(t *testing.T) {
 	c := start(t)
 	init := result(t, c.call(1, "initialize", ""))
-	if init["protocolVersion"] != "1" {
+	if init["protocolVersion"] != "2" {
 		t.Fatalf("initialize: %v", init)
 	}
 	if r := result(t, c.call(2, "loadPuzzle", yamlParam(t, "../../examples/puzzles/double-input.yaml"))); r["puzzle"] == nil {

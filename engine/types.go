@@ -40,6 +40,8 @@ type Metrics struct {
 	CellsSupplied     int            `json:"cellsSupplied"`
 	CellsUsed         int            `json:"cellsUsed"`
 	Connections       int            `json:"connections"`
+	// HardwareCost is the total cost of the player's hardware.
+	HardwareCost int `json:"hardwareCost"`
 }
 
 // Snapshot is a complete, serializable view of a machine.
@@ -59,11 +61,14 @@ type Snapshot struct {
 
 // CellSnapshot is the observable state of one cell.
 type CellSnapshot struct {
-	ID            string `json:"id"`
-	Type          string `json:"type"`
-	Programmable  bool   `json:"programmable"`
-	ProgramBytes  int    `json:"programBytes,omitempty"`
-	ProgramMemory int    `json:"programMemory,omitempty"`
+	ID           string `json:"id"`
+	Type         string `json:"type"`
+	Category     string `json:"category"`
+	Programmable bool   `json:"programmable"`
+	// Player is true for hardware the player instantiated.
+	Player        bool `json:"player,omitempty"`
+	ProgramBytes  int  `json:"programBytes,omitempty"`
+	ProgramMemory int  `json:"programMemory,omitempty"`
 	// PC is the current instruction index; Address its byte offset.
 	PC          int    `json:"pc"`
 	Address     int    `json:"address"`
@@ -106,6 +111,9 @@ type PortSnapshot struct {
 	Port    string          `json:"port"`
 	Enabled bool            `json:"enabled"`
 	Peer    *graph.Endpoint `json:"peer,omitempty"`
+	// Function is the port's function on peripherals that have them
+	// (e.g. "PUSH").
+	Function string `json:"function,omitempty"`
 }
 
 // InputSnapshot is the progress of one input stream.
@@ -171,6 +179,21 @@ type SuiteResult struct {
 	Passed  bool          `json:"passed"`
 	Tests   []*TestResult `json:"tests"`
 	Summary Summary       `json:"summary"`
+	// Score is set only when every test case passed: a solution must pass
+	// to qualify for scoring.
+	Score *Score `json:"score,omitempty"`
+}
+
+// Score is a passing solution's three independent optimisation
+// dimensions. Lower is better in each, and they are never combined into a
+// single number: a solution may trade one for another.
+type Score struct {
+	// Cost is the total hardware cost of the player's hardware.
+	Cost int `json:"cost"`
+	// Ticks is the worst-case tick count across all test cases.
+	Ticks int64 `json:"ticks"`
+	// Bytes is the total compiled bytecode size of every program.
+	Bytes int `json:"bytes"`
 }
 
 // Summary aggregates metrics across test cases.
@@ -186,6 +209,7 @@ type Summary struct {
 	CellsSupplied     int            `json:"cellsSupplied"`
 	CellsUsed         int            `json:"cellsUsed"`
 	Connections       int            `json:"connections"`
+	HardwareCost      int            `json:"hardwareCost"`
 }
 
 // Validator is a custom post-run check. Validators run outside the cell

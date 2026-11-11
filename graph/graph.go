@@ -1,5 +1,6 @@
-// Package graph models the machine topology: puzzle-defined cells with
-// enabled port slots, joined by player-defined bidirectional connections.
+// Package graph models the machine topology: cells (puzzle-supplied or
+// player-instantiated), each with its own number of ports, joined by
+// player-defined bidirectional connections.
 // Layout and positions are not part of the topology.
 package graph
 
@@ -24,11 +25,21 @@ type Connection struct {
 	To   Endpoint `json:"to" yaml:"to"`
 }
 
-// CellPorts describes a cell's identity and which port slots the puzzle
-// author enabled.
+// CellPorts describes a cell's identity and its ports: Enabled has one
+// entry per physical port P0..P(n-1); a false entry is a port the puzzle
+// author disabled on a fixed cell.
 type CellPorts struct {
 	ID      string
-	Enabled [vm.NumPorts]bool
+	Enabled []bool
+}
+
+// AllPorts returns an enabled mask for n ports.
+func AllPorts(n int) []bool {
+	m := make([]bool, n)
+	for i := range m {
+		m[i] = true
+	}
+	return m
 }
 
 // Link is a resolved port reference.
@@ -63,8 +74,8 @@ func (e Error) Path() string {
 type Topology struct {
 	cells []CellPorts
 	index map[string]int
-	peers [][vm.NumPorts]Link // Cell == -1 means unconnected
-	links []resolved          // in solution order
+	peers [][]Link   // per cell, per port; Cell == -1 means unconnected
+	links []resolved // in solution order
 }
 
 type resolved struct{ A, B Link }
@@ -72,18 +83,19 @@ type resolved struct{ A, B Link }
 // Build validates connections against the cells and returns the topology.
 // Every error is reported; the topology is nil if there are any.
 //
-// Rules: endpoints must name existing cells and physical ports P0..P3 that
-// the puzzle enabled; a port joins at most one connection; a cell may not
+// Rules: endpoints must name existing cells and physical ports that exist
+// on the cell (P0..P(n-1)) and are enabled; a port joins at most one connection; a cell may not
 // connect to itself; parallel connections between the same two cells are
 // fine when they use distinct ports.
 func Build(cells []CellPorts, conns []Connection) (*Topology, []Error) {
 	t := &Topology{
 		cells: append([]CellPorts(nil), cells...),
 		index: make(map[string]int, len(cells)),
-		peers: make([][vm.NumPorts]Link, len(cells)),
+		peers: make([][]Link, len(cells)),
 	}
 	for i, c := range cells {
 		t.index[c.ID] = i
+		t.peers[i] = make([]Link, len(c.Enabled))
 		for p := range t.peers[i] {
 			t.peers[i][p] = Link{Cell: -1}
 		}
@@ -131,9 +143,14 @@ func (t *Topology) resolve(i int, side string, e Endpoint, errs *[]Error) (Link,
 		*errs = append(*errs, Error{i, side + ".cell", fmt.Sprintf("unknown cell %q", e.Cell)})
 		return Link{}, false
 	}
+	n := len(t.cells[ci].Enabled)
 	p, ok := vm.ParsePhysicalPort(e.Port)
 	if !ok {
-		*errs = append(*errs, Error{i, side + ".port", fmt.Sprintf("invalid port %q (expected P0, P1, P2, or P3)", e.Port)})
+		*errs = append(*errs, Error{i, side + ".port", fmt.Sprintf("invalid port %q (expected %s)", e.Port, vm.PortRange(n))})
+		return Link{}, false
+	}
+	if p.Index() >= n {
+		*errs = append(*errs, Error{i, side + ".port", fmt.Sprintf("cell %q has no port %s: it has %d port(s), %s", e.Cell, p, n, vm.PortRange(n))})
 		return Link{}, false
 	}
 	if !t.cells[ci].Enabled[p] {
@@ -155,14 +172,17 @@ func (t *Topology) CellIndex(id string) (int, bool) {
 	return i, ok
 }
 
-// Enabled reports whether port p of cell i is enabled by the puzzle.
+// NumPorts returns the number of physical ports of cell i.
+func (t *Topology) NumPorts(i int) int { return len(t.cells[i].Enabled) }
+
+// Enabled reports whether port p of cell i exists and is enabled.
 func (t *Topology) Enabled(i int, p vm.Port) bool {
-	return p.Physical() && t.cells[i].Enabled[p]
+	return p.Physical() && p.Index() < len(t.cells[i].Enabled) && t.cells[i].Enabled[p]
 }
 
 // Peer returns the port connected to port p of cell i.
 func (t *Topology) Peer(i int, p vm.Port) (Link, bool) {
-	if !p.Physical() {
+	if !p.Physical() || p.Index() >= len(t.peers[i]) {
 		return Link{}, false
 	}
 	l := t.peers[i][p]

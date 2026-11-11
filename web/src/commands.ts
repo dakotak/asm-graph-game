@@ -98,7 +98,7 @@ export function importSolution() {
 
 function cycleCell(dir: 1 | -1) {
   const ws = useWorkspace.getState()
-  const cells = ws.puzzleDoc?.puzzle.cells.map((c) => c.id) ?? []
+  const cells = ws.cells.map((c) => c.id)
   if (cells.length === 0) return
   const i = ws.selectedCell ? cells.indexOf(ws.selectedCell) : -1
   ws.select(cells[(i + dir + cells.length) % cells.length])

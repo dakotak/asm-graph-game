@@ -1,0 +1,54 @@
+schema_version: 2
+puzzle: stack-reverse
+
+# One processor and a two-port stack (P0 = PUSH, P1 = POP).
+#
+# Each round starts by pushing a 0 sentinel. Values are pushed until the
+# input's 0 terminator arrives; then values are popped and sent out until
+# the sentinel comes back, and the terminator is written.
+#
+# Cost: cpu 10 + 4 ports × 2 + ⌈32 / 8⌉ = 22; stack 5 + 2 ports × 1 +
+# ⌈9 / 4⌉ = 10. Total 32 of the 50 budget.
+hardware:
+  - id: cpu
+    type: standard
+    port_count: 4
+    program_memory: 32
+  - id: stack
+    type: stack
+    port_count: 2
+    port_functions: [PUSH, POP]
+    config: {capacity: 9}
+
+connections:
+  - from: {cell: in, port: P0}
+    to: {cell: cpu, port: P0}
+  - from: {cell: cpu, port: P1}
+    to: {cell: stack, port: P0}
+  - from: {cell: stack, port: P1}
+    to: {cell: cpu, port: P2}
+  - from: {cell: cpu, port: P3}
+    to: {cell: out, port: P0}
+
+programs:
+  cpu: |
+    MOV 0, P1        # push the sentinel
+    read:
+    MOV P0, ACC
+    JEZ flush
+    MOV ACC, P1      # push
+    JMP read
+    flush:
+    MOV P2, ACC      # pop
+    JEZ done         # the sentinel: the sequence is out
+    MOV ACC, P3
+    JMP flush
+    done:
+    MOV 0, P3        # terminator
+
+metadata:
+  layout:
+    in: {x: 0, y: 0}
+    cpu: {x: 260, y: 0}
+    stack: {x: 260, y: 200}
+    out: {x: 520, y: 0}

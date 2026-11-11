@@ -36,6 +36,9 @@ func (r *Registry) Register(a Architecture) error {
 	if isa := a.ISA(); isa != nil && isa.Name() != t {
 		return fmt.Errorf("cell registry: type %q has ISA named %q", t, isa.Name())
 	}
+	if err := CheckHardwareSpec(a); err != nil {
+		return fmt.Errorf("cell registry: %w", err)
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if _, dup := r.archs[t]; dup {

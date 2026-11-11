@@ -5,7 +5,8 @@ import { useSim } from '../state/sim'
 import { useUi } from '../state/ui'
 import { useWorkspace } from '../state/workspace'
 import { usePrefs } from '../state/prefs'
-import { FakeServer, RpcFailure, fakeFetch, snapshot, tick, until } from '../test/fakeBackend'
+import { FakeServer, RpcFailure, catalog, fakeFetch, snapshot, tick, until } from '../test/fakeBackend'
+import type { Puzzle } from '../api/types'
 
 const initialWs = useWorkspace.getState()
 const initialSim = useSim.getState()
@@ -14,9 +15,9 @@ const initialUi = useUi.getState()
 let server: FakeServer
 let c: Controller
 
-async function boot(opts: { solutions?: Record<string, string>; handlers?: ConstructorParameters<typeof FakeServer>[0] } = {}) {
+async function boot(opts: { solutions?: Record<string, string>; handlers?: ConstructorParameters<typeof FakeServer>[0]; fetch?: Parameters<typeof fakeFetch>[0] } = {}) {
   server = new FakeServer(opts.handlers)
-  const f = fakeFetch({ solutions: opts.solutions })
+  const f = fakeFetch({ solutions: opts.solutions, ...opts.fetch })
   vi.stubGlobal('fetch', f.fn)
   c = new Controller({ wsUrl: 'ws://test/api/ws', WebSocketImpl: server.makeSocketClass(), schedule: (fn) => queueMicrotask(fn) })
   await c.init()
@@ -47,7 +48,7 @@ describe('RpcClient', () => {
     const rpc = new RpcClient({ url: 'ws://x', WebSocketImpl: s.makeSocketClass(), onEvent: (e) => events.push(e), reconnect: false })
     await rpc.connect()
     const [a, b] = await Promise.all([rpc.call<{ protocolVersion: string }>('initialize'), rpc.call('listCellTypes')])
-    expect(a.protocolVersion).toBe('1')
+    expect(a.protocolVersion).toBe('2')
     expect(b).toBeTruthy()
     const err = (await rpc.call('boom').catch((e: unknown) => e)) as RpcError
     expect(err).toBeInstanceOf(RpcError)
@@ -236,5 +237,71 @@ describe('Controller', () => {
     expect(useWorkspace.getState().solution?.programs.processor).toBe('NOP')
     expect(useWorkspace.getState().dirty).toBe(true)
     expect(c.exportYaml()?.yaml).toContain('NOP')
+  })
+
+  it('designs hardware: adds, configures and removes nodes, validated by the backend', async () => {
+    const hw: Puzzle = {
+      schema_version: 2,
+      id: 'hw',
+      cells: [
+        { id: 'in', type: 'input', config: { stream: 'xs' } },
+        { id: 'out', type: 'output', config: { stream: 'ys' } },
+      ],
+      hardware: { max_cost: 30 },
+      tests: [{ name: 't', inputs: { xs: [1] }, outputs: { ys: [1] } }],
+    }
+    const spec = (t: string) => catalog.types.find((x) => x.type === t)!.hardware
+    const effective = ['standard', 'stack'].map((t) => ({ type: t, spec: spec(t), ports: spec(t).ports, programMemory: spec(t).programMemory, cost: spec(t).cost, min: 0, max: 0, functions: spec(t).portFunctions?.functions.map((f) => f.name) }))
+    let lastYaml = ''
+    const f = await boot({
+      fetch: { puzzle: hw, score: { passed: true, score: { cost: 26, ticks: 9, bytes: 6 }, improved: ['cost', 'ticks', 'bytes'], record: { puzzle: 'hw', bests: { cost: { score: { cost: 26, ticks: 9, bytes: 6 }, file: 'best-cost.yaml', achieved: '' } } } } },
+      handlers: {
+        loadPuzzle: () => ({ puzzle: hw, hardware: effective, diagnostics: [] }),
+        loadSolution: (p) => {
+          lastYaml = (p as { yaml: string }).yaml
+          const over = lastYaml.includes('port_count: 8')
+          const report = { allowed: true, nodes: [], totalCost: over ? 34 : 26, maxCost: 30, nodeCount: 1, counts: {} }
+          if (over) throw new RpcFailure(-32001, 'solution is invalid', { diagnostics: [{ severity: 'error', code: 'solution.hardware.cost', path: 'hardware', message: 'hardware cost 34 exceeds this puzzle\'s budget of 30' }], hardware: report })
+          return { diagnostics: [], hardware: report }
+        },
+        runTests: () => ({ puzzle: 'hw', passed: true, tests: [], score: { cost: 26, ticks: 9, bytes: 6 }, summary: { passedTests: 1, totalTests: 1, totalTicks: 9, maxTicks: 9, totalInstructions: 0, totalTransfers: 0, programBytes: {}, totalProgramBytes: 6, cellsSupplied: 3, cellsUsed: 3, connections: 2, hardwareCost: 26 } }),
+      },
+    })
+    expect(await c.openPuzzle('hw')).toBe(true)
+    const ws = () => useWorkspace.getState()
+    expect(ws().hardwareCatalog?.map((e) => e.type)).toEqual(['standard', 'stack'])
+
+    c.addNode('standard')
+    expect(ws().solution?.hardware).toEqual([{ id: 'cpu1', type: 'standard' }])
+    expect(ws().cells.find((x) => x.id === 'cpu1')).toMatchObject({ player: true, portCount: 4, programMemory: 32 })
+    expect(ws().solution?.programs.cpu1).toBe('')
+    // The backend checks the design after edits (debounced).
+    await until(() => ws().hardwareReport?.totalCost === 26)
+    expect(lastYaml).toContain('hardware:')
+
+    // Shrinking the port count removes connections to ports that are gone.
+    expect(c.connect({ cell: 'in', port: 'P0' }, { cell: 'cpu1', port: 'P3' }).ok).toBe(true)
+    c.updateNode('cpu1', { port_count: 2 })
+    expect(ws().solution?.connections).toEqual([])
+    expect(useSim.getState().notices.some((n) => /Removed 1 connection/.test(n.text))).toBe(true)
+
+    // Constraint violations come back from the backend with the report.
+    c.updateNode('cpu1', { port_count: 8 })
+    await until(() => ws().hardwareIssues.length === 1)
+    expect(ws().hardwareIssues[0].message).toMatch(/budget of 30/)
+    expect(ws().hardwareReport?.totalCost).toBe(34)
+
+    // Passing all tests submits the solution for scoring.
+    c.updateNode('cpu1', { port_count: 2 })
+    await until(() => ws().hardwareIssues.length === 0)
+    await c.runTests()
+    await until(() => ws().lastScore !== null)
+    expect(f.scorePosts[0]).toContain('id: cpu1')
+    expect(ws().lastScore?.improved).toEqual(['cost', 'ticks', 'bytes'])
+
+    c.removeNode('cpu1')
+    expect(ws().solution?.hardware).toEqual([])
+    expect(ws().solution?.programs.cpu1).toBeUndefined()
+    expect(ws().cells.map((x) => x.id)).toEqual(['in', 'out'])
   })
 })

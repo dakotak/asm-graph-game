@@ -4,7 +4,7 @@ import "asmgraph/cell"
 
 // Builtins returns fresh instances of every built-in architecture.
 func Builtins() []cell.Architecture {
-	return []cell.Architecture{NewStandard(), NewStack(), Input{}, Output{}}
+	return []cell.Architecture{NewStandard(), NewStackProcessor(), Stack{}, Input{}, Output{}}
 }
 
 // RegisterBuiltins registers every built-in architecture with r.

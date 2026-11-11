@@ -7,13 +7,13 @@ import (
 	"asmgraph/vm"
 )
 
-var all = [vm.NumPorts]bool{true, true, true, true}
+var all = AllPorts(4)
 
 func cellsFixture() []CellPorts {
 	return []CellPorts{
 		{ID: "a", Enabled: all},
 		{ID: "b", Enabled: all},
-		{ID: "in", Enabled: [vm.NumPorts]bool{true, false, false, false}},
+		{ID: "in", Enabled: []bool{true, false, false, false}},
 	}
 }
 
@@ -73,7 +73,8 @@ func TestInvalidConnections(t *testing.T) {
 		path string
 	}{
 		{"disabled port", []Connection{conn("in", "P1", "a", "P0")}, "disabled", "connections[0].from.port"},
-		{"invalid port id", []Connection{conn("a", "P4", "b", "P0")}, "invalid port", "connections[0].from.port"},
+		{"missing port", []Connection{conn("a", "P4", "b", "P0")}, "has no port P4", "connections[0].from.port"},
+		{"invalid port id", []Connection{conn("a", "P99", "b", "P0")}, "invalid port", "connections[0].from.port"},
 		{"virtual port", []Connection{conn("a", "ANY", "b", "P0")}, "invalid port", "connections[0].from.port"},
 		{"unknown cell", []Connection{conn("a", "P0", "nope", "P0")}, "unknown cell", "connections[0].to.cell"},
 		{"self connection", []Connection{conn("a", "P0", "a", "P1")}, "itself", "connections[0]"},

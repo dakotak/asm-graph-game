@@ -18,7 +18,10 @@ copying game rules.
 
 | Feature | Source |
 |---|---|
-| Show the fixed cells | `loadPuzzle` → `puzzle.cells` (id, type, ports, program_memory) |
+| Show the fixed cells | `loadPuzzle` → `puzzle.cells` (id, type, port_count, ports, program_memory) |
+| Offer hardware to build | `loadPuzzle` → `hardware` (effective catalog), `listCellTypes` → `hardware` (plugin specs) |
+| Show costs and violations | `loadSolution` → `hardware` report, and diagnostics with paths like `hardware[1].port_count` (also on errors) |
+| Show scores | `runTests` → `SuiteResult.score`; the web server's `/api/puzzles/{id}/scores` keeps bests |
 | Explain cell types and instructions | `listCellTypes` |
 | Connect ports | Edit `connections` in your model, then `loadSolution` with inline `yaml`. Diagnostics give paths such as `connections[2].to.port`. |
 | Edit and compile assembly | `compile` → per-cell `bytes` / `limit` (memory bars), `disassembly`. Errors carry `cell`, `sourceLine`, and `sourceColumn`. |

@@ -1,4 +1,4 @@
-# JSON-RPC protocol (version "1")
+# JSON-RPC protocol (version "2")
 
 `asmgraph serve --stdio` speaks **JSON-RPC 2.0** over **newline-delimited
 JSON**. Each request, response, and notification is one line.
@@ -50,12 +50,12 @@ one session per connection); see [web.md](web.md).
 
 | Method | Params | Result |
 |---|---|---|
-| `initialize` | — | `name`, `version`, `protocolVersion`, `bytecodeVersion`, `puzzleSchemaVersion`, `solutionSchemaVersion`, `cellApiVersion`, `nativePlugins`, `cellTypes`, `methods` |
-| `listCellTypes` | — | `{types: [{type, description, programmable, instructions[], registers[], state[], config[]}], operandKinds, ports, syntax}`. `state` lists the fields `CellSnapshot.state` reports (`{name, kind: "word"|"list", summary}`). `operandKinds` documents each operand slot kind, `ports` describes P0–P3, ANY and LAST, and `syntax` gives comment characters and literal formats. |
-| `assemble` | `{type, source, memoryLimit?}` | `{ok, bytes?, limit, instructions?, hex?, disassembly?, diagnostics}`. Compiles one program without touching the session, for live editor feedback. `bytes` is reported even when over the limit. |
+| `initialize` | — | `name`, `version`, `protocolVersion`, `bytecodeVersion`, `puzzleSchemaVersion`, `solutionSchemaVersion`, `cellApiVersion`, `nativePlugins`, `cellTypes`, `maxPorts`, `methods` |
+| `listCellTypes` | — | `{types: [{type, description, programmable, instructions[], registers[], state[], config[], hardware}], operandKinds, ports, syntax}`. `state` lists the fields `CellSnapshot.state` reports (`{name, kind: "word"|"list", summary}`). `hardware` is the type's `cell.HardwareSpec`: `{category, ports: {min, max, default}, portFunctions?: {functions: [{name, direction, summary, min?, max?}], configurable, default, rule?}, programMemory?: {min, max, default}, cost: {base, perPort, properties?}, puzzleOnly?, overrides: {cost, defaults}}`. `operandKinds` documents each operand slot kind, `ports` describes `Pn`, ANY and LAST, and `syntax` gives comment characters and literal formats. |
+| `assemble` | `{type, source, memoryLimit?, ports?}` | `{ok, bytes?, limit, instructions?, hex?, disassembly?, diagnostics}`. Compiles one program without touching the session, for live editor feedback. `bytes` is reported even when over the limit. With `ports`, naming a port the cell does not have is an error. |
 | `validatePuzzle` | `{path}` or `{yaml}` | `{valid, diagnostics}`. Nothing is loaded. |
-| `loadPuzzle` | `{path}` or `{yaml}` | `{puzzle, diagnostics}`. Clears any solution and simulation. |
-| `loadSolution` | `{path}` or `{yaml}` | `{solution, diagnostics}`. Validates against the loaded puzzle. |
+| `loadPuzzle` | `{path}` or `{yaml}` | `{puzzle, diagnostics, hardware, migrated}`. Clears any solution and simulation. `hardware` is the effective catalog players may build from (`puzzle.Effective`: `{type, spec, ports, programMemory?, functions?, functionMax?, config?, cost, min, max}`), or null for fixed-topology puzzles. `migrated` lists schema-v1 conversions. |
+| `loadSolution` | `{path}` or `{yaml}` | `{solution, diagnostics, hardware}`. Validates against the loaded puzzle. `hardware` is the `HardwareReport` `{allowed, nodes: [{id, type, category, ports, programMemory?, portFunctions?, cost}], totalCost, maxCost?, nodeCount, maxNodes?, counts}`. On a validation error the report is also in the error's `data.hardware`, next to `data.diagnostics`. |
 | `exportPuzzle` / `exportSolution` | — | `{yaml}` of the loaded document |
 | `compile` | — | `{programs: [ProgramReport], totalBytes, diagnostics}` |
 | `start` | `{test?: name\|index, maxTicks?, cycleDetection?}` | `Snapshot` of a fresh machine. Compiles first if needed. |
@@ -131,15 +131,15 @@ outputs: [OutputSnapshot], metrics
 
 | Field | Meaning |
 |---|---|
-| `id`, `type`, `programmable`, `programBytes`, `programMemory` | Identity and memory use |
+| `id`, `type`, `category`, `programmable`, `player`, `programBytes`, `programMemory` | Identity (`player` is true for player-built hardware) and memory use |
 | `pc`, `address`, `instruction`, `sourceLine` | Current instruction: index, byte offset, disassembly, and source line to highlight |
 | `stage` | `ready`, `write` (result held for delivery), `idle`, or `halted` |
 | `pending` | `{received: [{operand, value}], output?, destination?}` for partly executed instructions |
 | `request` | The communication tried in the last tick, for example `"read P0"` |
 | `blocked`, `blockReason` | Whether the cell is blocked and why |
 | `halted`, `last`, `instructionsCompleted`, `error` | |
-| `ports` | `[{port, enabled, peer?: {cell, port}}]` |
-| `state` | The plugin's `Inspect()` view. Standard: `{ACC, BAK}`. Stack: `{ACC, stack, capacity}`. Input: `{stream, position, length, exhausted, next?}`. Output: `{stream, received}`. |
+| `ports` | `[{port, enabled, peer?: {cell, port}, function?}]`, one per configured port; `function` is a peripheral port's function (`PUSH`, …) |
+| `state` | The plugin's `Inspect()` view. Standard: `{ACC, BAK}`. Stack processor: `{ACC, stack, capacity}`. Passive stack: `{stack, capacity}`. Input: `{stream, position, length, exhausted, next?}`. Output: `{stream, received}`. |
 
 `OutputSnapshot`: `{cell, stream, state: pending|passed|failed, expected, received, mismatch?: {index, expected?, got}}`.
 
@@ -164,10 +164,18 @@ cycle?, error?, notes?
 
 While a test is still running, the status is `ready` or `running`.
 
-`SuiteResult`: `{puzzle, passed, tests: [TestResult], summary}`. The
-`summary` has `passedTests`, `totalTests`, `totalTicks`, `maxTicks`,
+`SuiteResult`: `{puzzle, passed, tests: [TestResult], summary, score?}`.
+The `summary` has `passedTests`, `totalTests`, `totalTicks`, `maxTicks`,
 `totalInstructions`, `totalTransfers`, `programBytes`,
-`totalProgramBytes`, `cellsSupplied`, `cellsUsed`, and `connections`.
+`totalProgramBytes`, `cellsSupplied`, `cellsUsed`, `connections`, and
+`hardwareCost`. `score` is `{cost, ticks, bytes}` and is present only when
+every test passed: hardware cost, worst-case ticks, and total bytecode
+bytes, three independent dimensions (see
+[hardware.md](hardware.md#scoring)). `metrics` also carry `hardwareCost`.
+
+Version "2" of the protocol added the hardware fields above, per-cell
+port counts in snapshots, and `score`. Clients should check
+`protocolVersion` from `initialize`.
 
 ## Example session
 

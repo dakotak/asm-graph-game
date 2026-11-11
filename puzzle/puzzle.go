@@ -19,8 +19,18 @@ import (
 	"asmgraph/vm"
 )
 
-// SchemaVersion is the puzzle file schema version this build reads.
-const SchemaVersion = 1
+// SchemaVersion is the newest puzzle file schema version. Version 2 added
+// player hardware (the `hardware` section), per-cell port counts, and
+// port functions. Version-1 files are still read; see Migrate.
+const SchemaVersion = 2
+
+// MinSchemaVersion is the oldest schema version still read.
+const MinSchemaVersion = 1
+
+// LegacyTypes maps cell types renamed since schema version 1 to their
+// current names. In v1, "stack" was the programmable stack processor; in
+// v2 it is the passive stack peripheral.
+var LegacyTypes = map[string]string{"stack": "stack_processor"}
 
 // Execution limits.
 const (
@@ -37,30 +47,56 @@ type Puzzle struct {
 	Cells         []CellDef  `yaml:"cells" json:"cells"`
 	Tests         []TestCase `yaml:"tests" json:"tests"`
 	Limits        Limits     `yaml:"limits,omitempty" json:"limits,omitempty"`
+	// Hardware, when present (schema v2), lets players instantiate their own
+	// hardware within these rules.
+	Hardware *HardwareRules `yaml:"hardware,omitempty" json:"hardware,omitempty"`
 	// Metadata is free-form presentation data for editors (layout hints,
 	// difficulty, ...). The engine never reads it.
 	Metadata map[string]any `yaml:"metadata,omitempty" json:"metadata,omitempty"`
 
 	file string
 	root *yaml.Node
+	// migrated lists v1 → v2 conversions applied while parsing.
+	migrated []string
 }
 
-// CellDef declares one puzzle-supplied cell.
+// CellDef declares one puzzle-supplied (fixed) cell.
 type CellDef struct {
 	ID   string `yaml:"id" json:"id"`
 	Type string `yaml:"type" json:"type"`
 	// ProgramMemory is the program budget in bytes (programmable cells only).
 	ProgramMemory int `yaml:"program_memory,omitempty" json:"program_memory,omitempty"`
-	// Ports lists the enabled physical ports. Omitted means all four.
-	Ports    []string       `yaml:"ports,omitempty" json:"ports,omitempty"`
-	Config   map[string]any `yaml:"config,omitempty" json:"config,omitempty"`
-	Metadata map[string]any `yaml:"metadata,omitempty" json:"metadata,omitempty"`
+	// PortCount is the number of physical ports (schema v2; defaults to the
+	// type's default). Schema-v1 cells always have four.
+	PortCount int `yaml:"port_count,omitempty" json:"port_count,omitempty"`
+	// Ports lists the enabled physical ports. Omitted means all of them.
+	Ports []string `yaml:"ports,omitempty" json:"ports,omitempty"`
+	// PortFunctions assigns a function to each port of a peripheral that
+	// declares port functions (schema v2; defaults to the type's default).
+	PortFunctions []string       `yaml:"port_functions,omitempty" json:"port_functions,omitempty"`
+	Config        map[string]any `yaml:"config,omitempty" json:"config,omitempty"`
+	Metadata      map[string]any `yaml:"metadata,omitempty" json:"metadata,omitempty"`
 }
 
-// EnabledPorts returns the enabled port mask. Invalid names are ignored
-// (Validate reports them).
-func (c *CellDef) EnabledPorts() [vm.NumPorts]bool {
-	var m [vm.NumPorts]bool
+// NumPorts returns the cell's port count in puzzle p: four for schema-v1
+// cells, otherwise port_count or the type's default.
+func (p *Puzzle) NumPorts(reg *cell.Registry, c *CellDef) int {
+	if p.SchemaVersion < 2 {
+		return vm.LegacyPorts
+	}
+	if c.PortCount > 0 {
+		return c.PortCount
+	}
+	if a, ok := reg.Lookup(c.Type); ok {
+		return cell.HardwareOf(a).Ports.Default
+	}
+	return vm.LegacyPorts
+}
+
+// EnabledPorts returns the enabled port mask for a cell with n ports.
+// Invalid names are ignored (Validate reports them).
+func (c *CellDef) EnabledPorts(n int) []bool {
+	m := make([]bool, n)
 	if c.Ports == nil {
 		for i := range m {
 			m[i] = true
@@ -68,12 +104,22 @@ func (c *CellDef) EnabledPorts() [vm.NumPorts]bool {
 		return m
 	}
 	for _, s := range c.Ports {
-		if p, ok := vm.ParsePhysicalPort(s); ok {
+		if p, ok := vm.ParsePhysicalPort(s); ok && p.Index() < n {
 			m[p] = true
 		}
 	}
 	return m
 }
+
+// CellSpec builds the engine spec of fixed cell c.
+func (p *Puzzle) CellSpec(reg *cell.Registry, c *CellDef) cell.Spec {
+	n := p.NumPorts(reg, c)
+	return cell.Spec{ID: c.ID, Type: c.Type, ProgramMemory: c.ProgramMemory, PortCount: n, Ports: c.EnabledPorts(n), PortFunctions: c.PortFunctions, Config: c.Config}
+}
+
+// Migrated lists the schema-v1 conversions applied when the puzzle was
+// parsed (for example a renamed cell type).
+func (p *Puzzle) Migrated() []string { return p.migrated }
 
 // TestCase is one input/expected-output scenario.
 type TestCase struct {
@@ -160,7 +206,23 @@ func Parse(data []byte, file string) (*Puzzle, diag.List) {
 		return nil, yamlErrors(err, file, "puzzle.yaml")
 	}
 	p.file, p.root = file, root
+	p.migrateTypes()
 	return p, nil
+}
+
+// migrateTypes renames v1 cell types that changed meaning in v2. The rest
+// of a v1 puzzle already means the same thing in v2: every cell has four
+// ports, and players cannot add hardware.
+func (p *Puzzle) migrateTypes() {
+	if p.SchemaVersion >= 2 {
+		return
+	}
+	for i := range p.Cells {
+		if n, ok := LegacyTypes[p.Cells[i].Type]; ok {
+			p.migrated = append(p.migrated, fmt.Sprintf("cells[%d].type: %s → %s", i, p.Cells[i].Type, n))
+			p.Cells[i].Type = n
+		}
+	}
 }
 
 func strictDecoder(data []byte) *yaml.Decoder {
@@ -194,8 +256,12 @@ var idRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*$`)
 // problem found, annotated with YAML paths and (when available) lines.
 func (p *Puzzle) Validate(reg *cell.Registry) diag.List {
 	var l diag.List
-	if p.SchemaVersion != SchemaVersion {
-		l.Errorf("puzzle.schema_version", "schema_version", "unsupported schema_version %d (this build reads version %d)", p.SchemaVersion, SchemaVersion)
+	if p.SchemaVersion < MinSchemaVersion || p.SchemaVersion > SchemaVersion {
+		l.Errorf("puzzle.schema_version", "schema_version", "unsupported schema_version %d (this build reads versions %d-%d)", p.SchemaVersion, MinSchemaVersion, SchemaVersion)
+	}
+	v1 := p.SchemaVersion < 2
+	if v1 && p.Hardware != nil {
+		l.Errorf("puzzle.schema_version", "hardware", "the hardware section needs schema_version: 2")
 	}
 	if p.ID == "" {
 		l.Errorf("puzzle.id", "id", "puzzle id is required")
@@ -224,11 +290,15 @@ func (p *Puzzle) Validate(reg *cell.Registry) diag.List {
 				ids[c.ID] = i
 			}
 		}
+		if v1 && (c.PortCount != 0 || c.PortFunctions != nil) {
+			l.Errorf("puzzle.schema_version", path, "port_count and port_functions need schema_version: 2")
+		}
+		n := p.NumPorts(reg, c)
 		seenPorts := map[vm.Port]bool{}
 		for k, s := range c.Ports {
 			pp, ok := vm.ParsePhysicalPort(s)
-			if !ok {
-				l.Errorf("puzzle.cell.port", fmt.Sprintf("%s.ports[%d]", path, k), "invalid port %q (expected P0, P1, P2, or P3)", s)
+			if !ok || pp.Index() >= n {
+				l.Errorf("puzzle.cell.port", fmt.Sprintf("%s.ports[%d]", path, k), "invalid port %q (this cell has %d port(s), %s)", s, n, vm.PortRange(n))
 				continue
 			}
 			if seenPorts[pp] {
@@ -261,6 +331,20 @@ func (p *Puzzle) Validate(reg *cell.Registry) diag.List {
 				fp += "." + e.Field
 			}
 			l.Errorf("puzzle.cell.config", fp, "%s", e.Message)
+		}
+		if !v1 && len(cfgErrs) == 0 {
+			// Fixed cells must respect the plugin's physical limits too.
+			hc := cell.HardwareConfig{Ports: n, PortFunctions: c.PortFunctions, ProgramMemory: c.ProgramMemory, Config: c.Config}
+			for _, e := range cell.ValidateHardware(arch, hc) {
+				if strings.HasPrefix(e.Field, "config") {
+					continue // reported above
+				}
+				f := e.Field
+				if f == "ports" {
+					f = "port_count"
+				}
+				l.Errorf("puzzle.cell.hardware", path+"."+f, "%s", e.Message)
+			}
 		}
 		if decl, ok := arch.(cell.StreamDeclarer); ok && len(cfgErrs) == 0 {
 			for _, s := range decl.InputStreams(c.Config) {
@@ -301,6 +385,7 @@ func (p *Puzzle) Validate(reg *cell.Registry) diag.List {
 	if p.Limits.MaxTicks < 0 || p.Limits.MaxTicks > MaxMaxTicks {
 		l.Errorf("puzzle.limits", "limits.max_ticks", "max_ticks must be between 1 and %d", MaxMaxTicks)
 	}
+	p.validateHardware(&l, reg)
 	return p.Annotate(l)
 }
 

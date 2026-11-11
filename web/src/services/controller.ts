@@ -9,6 +9,9 @@ import {
   type AssembleResult,
   type CellTypeCatalog,
   type CompileResult,
+  type Diagnostic,
+  type EffectiveHardware,
+  type HardwareReport,
   type EventLevel,
   type PausedData,
   type SimEvent,
@@ -18,21 +21,23 @@ import {
 } from '../api/types'
 import { connectionId, type ConnectCheck } from '../lib/connections'
 import { formatEvent, RingBuffer, type LogEntry } from '../lib/eventLog'
-import { autoLayout } from '../lib/layout'
+import { nextNodeId, resolveCells, type CellView } from '../lib/hardware'
+import { autoLayout, NODE_HEIGHT, NODE_WIDTH } from '../lib/layout'
 import { adaptToPuzzle, emptySolution, parseSolution, serializeSolution, type Position, type SolutionModel } from '../lib/solution'
 import { applyEvents, emptyView, viewFromSnapshot } from '../lib/simReducer'
 import { isTerminal } from '../lib/status'
 import { clearDraft, loadDraft, markSolved, saveDraft, SPEEDS, usePrefs } from '../state/prefs'
 import { notify, useSim, type EdgeActivity } from '../state/sim'
 import { useUi } from '../state/ui'
-import { cellStream, isProgrammableType, useWorkspace } from '../state/workspace'
-import type { CellDef, Endpoint, Puzzle } from '../api/types'
+import { cellStream, findCell, isProgrammableType, useWorkspace } from '../state/workspace'
+import type { Endpoint, Puzzle } from '../api/types'
 
 const MAX_QUEUED_EVENTS = 5000
 const LOG_CAPACITY = 1000
 const POLL_MS = 150
 const ASSEMBLE_DEBOUNCE_MS = 250
 const DRAFT_DEBOUNCE_MS = 1000
+const HARDWARE_CHECK_MS = 300
 
 export interface ControllerOptions {
   wsUrl?: string
@@ -57,6 +62,7 @@ export class Controller {
   private level: EventLevel | null = null
   private assembleTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private draftTimer: ReturnType<typeof setTimeout> | null = null
+  private hardwareTimer: ReturnType<typeof setTimeout> | null = null
   private schedule: (fn: () => void) => void
   /** Execution commands run one at a time, so rapid key presses never interleave. */
   private chain: Promise<unknown> = Promise.resolve()
@@ -277,7 +283,8 @@ export class Controller {
         useWorkspace.getState().setDiagnostics(doc.summary.diagnostics ?? [])
         return false
       }
-      await this.call('loadPuzzle', { yaml: doc.yaml })
+      const loaded = await this.call<{ hardware?: EffectiveHardware[] | null }>('loadPuzzle', { yaml: doc.yaml })
+      useWorkspace.getState().setHardwareCatalog(doc.puzzle.hardware ? (loaded?.hardware ?? []) : null)
       let model: SolutionModel | null = null
       let name = ''
       let dirty = false
@@ -312,6 +319,8 @@ export class Controller {
       useWorkspace.getState().openPuzzle(doc, model, name, dirty)
       usePrefs.getState().set({ lastPuzzle: id })
       this.assembleAll()
+      this.scheduleHardwareCheck(0)
+      void this.loadBests(id)
       void this.pushBreakpoints()
       useUi.setState({ fitView: useUi.getState().fitView + 1 })
       return true
@@ -325,13 +334,14 @@ export class Controller {
 
   /** Fills in positions for cells that have none (auto layout when none have one). */
   private withLayout(model: SolutionModel, puzzle: Puzzle, force = false): SolutionModel {
-    const cells = puzzle.cells
+    const ws = useWorkspace.getState()
+    const cells: CellView[] = resolveCells(puzzle, model, ws.catalog, ws.hardwareCatalog, null)
     const missing = cells.filter((c) => !model.layout[c.id]).map((c) => c.id)
     if (!force && missing.length === 0) return model
     // A cell is an input/output if its stream is a test-case input/output
     // stream; this works for any cell type, including plugins.
     const t0 = puzzle.tests[0]
-    const isIO = (dir: 'inputs' | 'outputs') => (c: CellDef) => {
+    const isIO = (dir: 'inputs' | 'outputs') => (c: CellView) => {
       const s = cellStream(c)
       return !!s && !!t0 && s in (t0[dir] ?? {})
     }
@@ -379,6 +389,95 @@ export class Controller {
     this.scheduleDraft()
   }
 
+  // --- hardware design ---------------------------------------------------------
+
+  /** Adds a node of an allowed type with its default configuration. */
+  addNode(type: string) {
+    const ws = useWorkspace.getState()
+    if (!ws.solution || !ws.hardwareCatalog?.some((e) => e.type === type)) return
+    const id = nextNodeId(type, new Set(ws.cells.map((c) => c.id)))
+    // Place it below the current design, near the middle.
+    const pos = Object.values(ws.solution.layout)
+    const x = pos.length ? (Math.min(...pos.map((p) => p.x)) + Math.max(...pos.map((p) => p.x))) / 2 : 0
+    const y = pos.length ? Math.max(...pos.map((p) => p.y)) + NODE_HEIGHT + 40 : 0
+    const free = (px: number) => !pos.some((p) => Math.abs(p.x - px) < NODE_WIDTH && Math.abs(p.y - y) < NODE_HEIGHT)
+    let px = x
+    for (let k = 1; !free(px) && k < 20; k++) px = x + (k % 2 ? 1 : -1) * Math.ceil(k / 2) * (NODE_WIDTH + 30)
+    ws.addNode({ id, type }, { x: px, y }, this.programmable(type) ? '' : null)
+    this.afterHardwareEdit()
+    if (this.programmable(type)) this.scheduleAssemble(id)
+    notify('info', `Added ${id}. Configure it in the inspector; connect its ports in the graph.`, 3000)
+  }
+
+  updateNode(id: string, patch: Parameters<ReturnType<typeof useWorkspace.getState>['updateNode']>[1]) {
+    const removed = useWorkspace.getState().updateNode(id, patch)
+    if (removed.length) {
+      const list = removed.map((c) => `${c.from.cell}.${c.from.port}–${c.to.cell}.${c.to.port}`).join(', ')
+      notify('warn', `Removed ${removed.length} connection${removed.length > 1 ? 's' : ''} that no longer fit ${id}: ${list}.`)
+    }
+    this.afterHardwareEdit()
+    if (findCell(useWorkspace.getState().cells, id)?.programmable) this.scheduleAssemble(id)
+  }
+
+  removeNode(id: string) {
+    const ws = useWorkspace.getState()
+    if (!ws.solution?.hardware.some((n) => n.id === id)) return
+    ws.removeNode(id)
+    this.afterHardwareEdit()
+    void this.pushBreakpoints()
+  }
+
+  private afterHardwareEdit() {
+    this.invalidate()
+    this.scheduleDraft()
+    this.scheduleHardwareCheck()
+  }
+
+  /**
+   * Asks the backend to validate and cost the current design (by loading
+   * it), so constraint violations and costs show before anything runs.
+   */
+  private scheduleHardwareCheck(delay = HARDWARE_CHECK_MS) {
+    if (!useWorkspace.getState().hardwareCatalog) return
+    if (this.hardwareTimer) clearTimeout(this.hardwareTimer)
+    this.hardwareTimer = setTimeout(() => {
+      this.hardwareTimer = null
+      void this.serial(() => this.syncSolution().catch(() => {}))
+    }, delay)
+  }
+
+  /** Records the backend's hardware report and its hardware/topology problems. */
+  private applyHardware(report: HardwareReport | undefined, diagnostics: Diagnostic[]) {
+    if (!useWorkspace.getState().hardwareCatalog) return
+    const issues = diagnostics.filter((d) => d.severity === 'error' && (d.code?.startsWith('solution.hardware') || d.path === 'hardware'))
+    useWorkspace.getState().setHardwareReport(report ?? null, issues)
+  }
+
+  async loadBests(id: string) {
+    try {
+      const r = await http.getScores(id)
+      if (useWorkspace.getState().puzzleDoc?.puzzle.id === id) useWorkspace.getState().setBests(r, null)
+    } catch {
+      /* bests are optional */
+    }
+  }
+
+  /** Submits a passing solution; the server re-runs it and keeps per-dimension bests. */
+  private async submitScore() {
+    const ws = useWorkspace.getState()
+    if (!ws.solution || !ws.puzzleDoc) return
+    const id = ws.puzzleDoc.puzzle.id
+    try {
+      const r = await http.submitScore(id, serializeSolution(ws.solution))
+      if (useWorkspace.getState().puzzleDoc?.puzzle.id !== id) return
+      useWorkspace.getState().setBests(r.record, r)
+      if (r.improved.length) notify('success', `New personal best: ${r.improved.join(', ')}.`, 4000)
+      void this.refreshPuzzles()
+    } catch (e) {
+      notify('warn', `Score not recorded: ${errorText(e)}`)
+    }
+  }
+
   /**
    * Any edit that affects execution invalidates the running machine: the
    * backend still holds the old program, so the session is reset and the
@@ -410,11 +509,11 @@ export class Controller {
   /** Asks the real assembler for the exact size and diagnostics of one program. */
   async assemble(cell: string) {
     const ws = useWorkspace.getState()
-    const def = ws.puzzleDoc?.puzzle.cells.find((c) => c.id === cell)
+    const def = findCell(ws.cells, cell)
     const source = ws.solution?.programs[cell]
     if (!def || source === undefined || this.rpc?.connectionState !== 'open') return
     try {
-      const r = await this.call<AssembleResult>('assemble', { type: def.type, source, memoryLimit: def.program_memory ?? 0 })
+      const r = await this.call<AssembleResult>('assemble', { type: def.type, source, memoryLimit: def.programMemory, ports: def.portCount })
       // Ignore stale responses for sources that changed meanwhile.
       if (useWorkspace.getState().solution?.programs[cell] === source) ws.setAssemble(cell, { ...r, source })
     } catch {
@@ -458,7 +557,15 @@ export class Controller {
     if (!ws.solution) throw new Error('No puzzle loaded.')
     const version = ws.version
     if (useSim.getState().loadedVersion === version) return
-    await this.call('loadSolution', { yaml: serializeSolution(ws.solution) })
+    try {
+      const r = await this.call<{ hardware?: HardwareReport }>('loadSolution', { yaml: serializeSolution(ws.solution) })
+      if (useWorkspace.getState().version === version) this.applyHardware(r?.hardware, [])
+    } catch (e) {
+      if (e instanceof RpcError && useWorkspace.getState().version === version) {
+        this.applyHardware((e.data as { hardware?: HardwareReport } | undefined)?.hardware, e.diagnostics)
+      }
+      throw e
+    }
     useSim.setState({ loadedVersion: version, started: false })
   }
 
@@ -605,6 +712,7 @@ export class Controller {
       useSim.setState({ results })
       if (r.passed) {
         markSolved(r.puzzle)
+        void this.submitScore()
         notify('success', `All ${r.summary.totalTests} tests passed — ${r.summary.totalProgramBytes} bytes, ${r.summary.maxTicks} ticks max.`)
       } else {
         notify('error', `${r.summary.totalTests - r.summary.passedTests} of ${r.summary.totalTests} tests failed.`)
@@ -697,6 +805,23 @@ export class Controller {
     }
   }
 
+  /** Loads the personal-best solution for one score dimension (unsaved). */
+  async loadBest(dimension: 'cost' | 'ticks' | 'bytes'): Promise<boolean> {
+    const doc = useWorkspace.getState().puzzleDoc
+    if (!doc) return false
+    try {
+      const s = await http.getBestSolution(doc.puzzle.id, dimension)
+      const { solution, warnings } = adaptToPuzzle(parseSolution(s.yaml), doc.puzzle, this.programmable)
+      this.applySolution(solution, '', true)
+      warnings.forEach((w) => notify('warn', w))
+      notify('info', `Loaded your best ${dimension} solution. Save it to keep a named copy.`)
+      return true
+    } catch (e) {
+      notify('error', `Cannot load the best ${dimension} solution: ${errorText(e)}`)
+      return false
+    }
+  }
+
   newSolution() {
     const doc = useWorkspace.getState().puzzleDoc
     if (!doc) return
@@ -732,6 +857,7 @@ export class Controller {
     useWorkspace.getState().replaceSolution(withPos, name, dirty)
     useSim.setState({ results: {} })
     this.assembleAll()
+    this.scheduleHardwareCheck(0)
     if (dirty) this.scheduleDraft()
     useUi.setState({ fitView: useUi.getState().fitView + 1 })
   }

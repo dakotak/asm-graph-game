@@ -27,7 +27,7 @@ import (
 )
 
 // Version is the protocol version reported by initialize.
-const Version = "1"
+const Version = "2"
 
 // ServerName and ServerVersion identify this implementation.
 const (
@@ -272,6 +272,7 @@ func (s *Service) initialize(json.RawMessage) (any, *Error) {
 		"cellApiVersion":        cell.APIVersion,
 		"nativePlugins":         plugins.NativeSupported(),
 		"cellTypes":             s.reg.Types(),
+		"maxPorts":              vm.MaxPorts,
 		"methods":               Methods(),
 	}, nil
 }
@@ -286,6 +287,9 @@ type CellTypeInfo struct {
 	// State lists the fields CellSnapshot.state reports, in display order.
 	State  []cell.StateField  `json:"state,omitempty"`
 	Config []cell.ConfigField `json:"config,omitempty"`
+	// Hardware is the type's hardware description: category, port range,
+	// port functions, program memory range, and cost model.
+	Hardware cell.HardwareSpec `json:"hardware"`
 }
 
 // InstructionInfo describes one instruction for editors.
@@ -302,7 +306,7 @@ func DescribeTypes(reg *cell.Registry) []CellTypeInfo {
 	var out []CellTypeInfo
 	for _, t := range reg.Types() {
 		a, _ := reg.Lookup(t)
-		info := CellTypeInfo{Type: t, Description: a.Description(), Config: a.ConfigSchema()}
+		info := CellTypeInfo{Type: t, Description: a.Description(), Config: a.ConfigSchema(), Hardware: cell.HardwareOf(a)}
 		if isa := a.ISA(); isa != nil {
 			info.Programmable = true
 			info.Registers = isa.Registers()
@@ -332,8 +336,8 @@ func DescribeTypes(reg *cell.Registry) []CellTypeInfo {
 // OperandKinds documents what each operand slot kind accepts. Editors use
 // it for completion and hover help instead of hard-coding the rules.
 var OperandKinds = map[string]string{
-	"source":      "a register, a port (P0-P3, ANY, LAST), or an integer literal in [-2147483648, 2147483647]",
-	"destination": "a register or a port (P0-P3, ANY, LAST)",
+	"source":      "a register, a port (one of the cell's P0, P1, ..., ANY, LAST), or an integer literal in [-2147483648, 2147483647]",
+	"destination": "a register or a port (one of the cell's P0, P1, ..., ANY, LAST)",
 	"target":      "a label, or a 0-based instruction index",
 }
 
@@ -344,13 +348,11 @@ type PortInfo struct {
 	Description string `json:"description"`
 }
 
-// Ports lists every port operand.
+// Ports lists the port operands. Physical ports are numbered per cell: a
+// cell with n ports has P0..P(n-1) ("Pn" stands for all of them).
 var Ports = []PortInfo{
-	{"P0", true, "Physical port slot 0"},
-	{"P1", true, "Physical port slot 1"},
-	{"P2", true, "Physical port slot 2"},
-	{"P3", true, "Physical port slot 3"},
-	{"ANY", false, "Any connected port; lowest-numbered ready port wins. Sets LAST."},
+	{"Pn", true, "Physical port n. A cell has ports P0 to P(count-1); the count is set by the puzzle or the player."},
+	{"ANY", false, "Any of this cell's connected ports; lowest-numbered ready port wins. Sets LAST."},
 	{"LAST", false, "The port used by the most recent ANY transfer; blocks until one has happened."},
 }
 
@@ -377,6 +379,8 @@ type AssembleParams struct {
 	Type        string `json:"type"`
 	Source      string `json:"source"`
 	MemoryLimit int    `json:"memoryLimit,omitempty"`
+	// Ports is the cell's port count; port operands beyond it are errors.
+	Ports int `json:"ports,omitempty"`
 }
 
 // assemble compiles one program for a cell type without touching the
@@ -395,13 +399,13 @@ func (s *Service) assemble(params json.RawMessage) (any, *Error) {
 	if isa == nil {
 		return nil, errf(CodeInvalidParams, "cell type %q is not programmable", p.Type)
 	}
-	if p.MemoryLimit < 0 || len(p.Source) > 1<<20 {
-		return nil, errf(CodeInvalidParams, "invalid memoryLimit or source too large")
+	if p.MemoryLimit < 0 || p.Ports < 0 || p.Ports > vm.MaxPorts || len(p.Source) > 1<<20 {
+		return nil, errf(CodeInvalidParams, "invalid memoryLimit, ports, or source too large")
 	}
 	out := map[string]any{"ok": true, "limit": p.MemoryLimit, "diagnostics": []diag.Diagnostic{}}
 	// Compile without a limit first so the true size is known even when the
 	// program does not fit.
-	res, errs := asm.Compile(p.Source, isa, asm.Options{})
+	res, errs := asm.Compile(p.Source, isa, asm.Options{Ports: p.Ports})
 	if len(errs) > 0 {
 		var l diag.List
 		for _, e := range errs {
@@ -428,7 +432,7 @@ func (s *Service) assemble(params json.RawMessage) (any, *Error) {
 	}
 	out["disassembly"] = dis
 	if p.MemoryLimit > 0 && res.Program.Size() > p.MemoryLimit {
-		_, errs := asm.Compile(p.Source, isa, asm.Options{MemoryLimit: p.MemoryLimit})
+		_, errs := asm.Compile(p.Source, isa, asm.Options{MemoryLimit: p.MemoryLimit, Ports: p.Ports})
 		var l diag.List
 		for _, e := range errs {
 			l = append(l, diag.Diagnostic{Severity: diag.Error, Code: "asm.memory", Message: e.Msg, SourceLine: e.Pos.Line, SourceColumn: e.Pos.Column})
@@ -470,7 +474,12 @@ func (s *Service) loadPuzzle(params json.RawMessage) (any, *Error) {
 	if l2 := s.sess.LoadPuzzle(p); l2.HasErrors() {
 		return nil, diagErr(CodeValidationFailed, "puzzle is invalid", l2)
 	}
-	return map[string]any{"puzzle": p, "diagnostics": nonNil(l)}, nil
+	return map[string]any{
+		"puzzle": p, "diagnostics": nonNil(l),
+		// hardware is the effective catalog players may build from (absent
+		// for fixed-topology puzzles); migrated lists v1 conversions.
+		"hardware": p.HardwareCatalog(s.reg), "migrated": p.Migrated(),
+	}, nil
 }
 
 func (s *Service) loadSolution(params json.RawMessage) (any, *Error) {
@@ -485,10 +494,16 @@ func (s *Service) loadSolution(params json.RawMessage) (any, *Error) {
 	if l.HasErrors() {
 		return nil, diagErr(CodeValidationFailed, "solution is invalid", l)
 	}
+	// The hardware report (resolved nodes, costs, budget) is returned even
+	// when the solution is invalid, so editors can show budget usage next
+	// to the constraint violations.
+	report := sol.Report(s.sess.Puzzle(), s.reg)
 	if l2 := s.sess.LoadSolution(sol); l2.HasErrors() {
-		return nil, diagErr(CodeValidationFailed, "solution is invalid", l2)
+		e := diagErr(CodeValidationFailed, "solution is invalid", l2)
+		e.Data.(map[string]any)["hardware"] = report
+		return nil, e
 	}
-	return map[string]any{"solution": sol, "diagnostics": []diag.Diagnostic{}}, nil
+	return map[string]any{"solution": sol, "diagnostics": []diag.Diagnostic{}, "hardware": report}, nil
 }
 
 func (s *Service) exportPuzzle(json.RawMessage) (any, *Error) {

@@ -109,9 +109,38 @@ export const catalog: CellTypeCatalog = {
       programmable: true,
       instructions: [{ mnemonic: 'MOV', opcode: '0x01', operands: ['source', 'destination'], summary: 'move', core: true }],
       registers: [{ code: 0, name: 'NIL', summary: '' }, { code: 1, name: 'ACC', summary: '' }],
+      hardware: {
+        category: 'processor',
+        ports: { min: 1, max: 8, default: 4 },
+        programMemory: { min: 1, max: 1024, default: 32 },
+        cost: { base: 10, perPort: 2, properties: [{ property: 'program_memory', cost: 1, per: 8 }] },
+        overrides: { cost: true, defaults: true },
+      },
     },
-    { type: 'input', description: 'in', programmable: false, config: [] },
-    { type: 'output', description: 'out', programmable: false, config: [] },
+    {
+      type: 'stack',
+      description: 'passive stack',
+      programmable: false,
+      config: [{ name: 'capacity', type: 'int', default: 8, min: 1, max: 64 }],
+      hardware: {
+        category: 'peripheral',
+        ports: { min: 2, max: 8, default: 4 },
+        portFunctions: {
+          functions: [
+            { name: 'PUSH', direction: 'in', summary: 'push', min: 1 },
+            { name: 'POP', direction: 'out', summary: 'pop', min: 1 },
+            { name: 'PEEK', direction: 'out', summary: 'peek' },
+            { name: 'SIZE', direction: 'out', summary: 'size' },
+          ],
+          configurable: true,
+          default: ['PUSH', 'POP', 'PEEK', 'SIZE'],
+        },
+        cost: { base: 5, perPort: 1, properties: [{ property: 'capacity', cost: 1, per: 4 }] },
+        overrides: { cost: true, defaults: true },
+      },
+    },
+    { type: 'input', description: 'in', programmable: false, config: [], hardware: { category: 'io', ports: { min: 1, max: 8, default: 1 }, cost: { base: 0, perPort: 0 }, puzzleOnly: true, overrides: { cost: false, defaults: false } } },
+    { type: 'output', description: 'out', programmable: false, config: [], hardware: { category: 'io', ports: { min: 1, max: 8, default: 1 }, cost: { base: 0, perPort: 0 }, puzzleOnly: true, overrides: { cost: false, defaults: false } } },
   ],
   operandKinds: { source: 'src', destination: 'dst', target: 'tgt' },
   ports: [{ name: 'P0', physical: true, description: '' }],
@@ -141,19 +170,19 @@ export function snapshot(tick = 0, status: Snapshot['status'] = 'ready'): Snapsh
     tick,
     status,
     cells: [
-      { id: 'processor', type: 'standard', programmable: true, pc: tick % 3, address: 0, stage: 'ready', blocked: false, ports: [], state: { ACC: tick, BAK: 0 }, instructionsCompleted: tick },
+      { id: 'processor', type: 'standard', category: 'processor', programmable: true, pc: tick % 3, address: 0, stage: 'ready', blocked: false, ports: [], state: { ACC: tick, BAK: 0 }, instructionsCompleted: tick },
     ],
     connections: [],
     inputs: [{ cell: 'input', stream: 'numbers', position: 0, length: 2 }],
     outputs: [{ cell: 'output', stream: 'result', state: 'pending', expected: [2, 4], received: [] }],
-    metrics: { ticks: tick, instructions: 0, transfers: 0, programBytes: {}, totalProgramBytes: 0, cellsSupplied: 3, cellsUsed: 0, connections: 0 },
+    metrics: { ticks: tick, instructions: 0, transfers: 0, programBytes: {}, totalProgramBytes: 0, cellsSupplied: 3, cellsUsed: 0, connections: 0, hardwareCost: 0 },
   }
 }
 
 function defaultHandlers(): Record<string, Handler> {
   let tick = 0
   return {
-    initialize: () => ({ protocolVersion: '1', version: 'test' }),
+    initialize: () => ({ protocolVersion: '2', version: 'test' }),
     listCellTypes: () => catalog,
     loadPuzzle: () => ({ puzzle, diagnostics: [] }),
     loadSolution: () => ({ diagnostics: [] }),
@@ -186,21 +215,31 @@ function defaultHandlers(): Record<string, Handler> {
 }
 
 /** A fetch() implementing the HTTP library endpoints. */
-export function fakeFetch(opts: { solutions?: Record<string, string> } = {}) {
+export function fakeFetch(opts: { solutions?: Record<string, string>; puzzle?: Puzzle; score?: unknown } = {}) {
   const solutions = { ...(opts.solutions ?? {}) }
   const puts: { url: string; body: string }[] = []
+  const scorePosts: string[] = []
+  const pz = opts.puzzle ?? puzzle
+  const id = pz.id
   const fn = async (url: string, init?: RequestInit) => {
     const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status })
     if (url === '/api/puzzles') {
-      return json(200, { puzzles: [{ id: 'double-input', name: 'Double the Input', description: '', file: 'x', cellTypes: [], cells: 3, programmableCells: 1, tests: 2, valid: true, solutions: 0 }] })
+      return json(200, { puzzles: [{ id, name: pz.name ?? id, description: '', file: 'x', cellTypes: [], cells: 3, programmableCells: 1, tests: 2, valid: true, solutions: 0, hardware: !!pz.hardware }] })
     }
-    if (url === '/api/puzzles/double-input') {
-      return json(200, { summary: { id: 'double-input', valid: true }, yaml: 'puzzle-yaml', puzzle })
+    if (url === `/api/puzzles/${id}`) {
+      return json(200, { summary: { id, valid: true }, yaml: 'puzzle-yaml', puzzle: pz })
     }
-    if (url === '/api/puzzles/double-input/solutions') {
+    if (url === `/api/puzzles/${id}/solutions`) {
       return json(200, { solutions: Object.keys(solutions).map((name) => ({ name, modified: '2026-01-01T00:00:00Z', size: 1 })) })
     }
-    const m = /^\/api\/puzzles\/double-input\/solutions\/(.+)$/.exec(url)
+    if (url === `/api/puzzles/${id}/scores`) {
+      if (init?.method === 'POST') {
+        scorePosts.push(JSON.parse(String(init.body)).yaml)
+        return json(200, opts.score ?? { passed: true, improved: [], record: { puzzle: id, bests: {} } })
+      }
+      return json(200, { puzzle: id, bests: {} })
+    }
+    const m = new RegExp(`^/api/puzzles/${id}/solutions/(.+)$`).exec(url)
     if (m) {
       if (init?.method === 'PUT') {
         puts.push({ url, body: String(init.body) })
@@ -212,7 +251,7 @@ export function fakeFetch(opts: { solutions?: Record<string, string> } = {}) {
     }
     return json(404, { error: 'not found' })
   }
-  return { fn, puts, solutions }
+  return { fn, puts, solutions, scorePosts }
 }
 
 export const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms))

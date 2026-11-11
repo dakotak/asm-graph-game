@@ -2,12 +2,14 @@ import clsx from 'clsx'
 import { controller } from '../services/controller'
 import { useSim } from '../state/sim'
 import { cellStream, cellType, useWorkspace } from '../state/workspace'
+import { HardwarePalette } from './HardwarePanel'
 import { PlainText, StatusBadge } from './ui'
 
 export function PuzzleSidebar() {
   const doc = useWorkspace((s) => s.puzzleDoc)
   const catalog = useWorkspace((s) => s.catalog)
   const selected = useWorkspace((s) => s.selectedCell)
+  const cells = useWorkspace((s) => s.cells)
   const programs = useWorkspace((s) => s.compile.programs)
   const assemble = useWorkspace((s) => s.assemble)
   const testIndex = useSim((s) => s.testIndex)
@@ -41,10 +43,20 @@ export function PuzzleSidebar() {
         {p.limits?.max_ticks && <p className="mt-2 font-mono text-[10px] text-fg-faint">tick limit {p.limits.max_ticks}</p>}
       </section>
 
+      {p.hardware ? (
+        <HardwarePalette />
+      ) : (
+        <section className="border-b border-line px-3 py-2 text-[11px] text-fg-muted" data-testid="fixed-hardware-note">
+          <h3 className="label-caps mb-1">Hardware</h3>
+          This puzzle supplies all of its cells; you connect and program them. Puzzles marked <span className="text-accent">build your hardware</span> in the
+          puzzle browser (Mod+O) let you add your own nodes.
+        </section>
+      )}
+
       <section className="border-b border-line p-3">
         <h2 className="label-caps mb-2">Cells</h2>
         <ul className="space-y-0.5">
-          {p.cells.map((c) => {
+          {cells.map((c) => {
             const t = cellType(catalog, c.type)
             const bytes = assemble[c.id]?.bytes ?? programs[c.id]?.bytes
             const stream = cellStream(c)
@@ -60,8 +72,9 @@ export function PuzzleSidebar() {
                 >
                   <span className="truncate text-fg">{c.id}</span>
                   <span className="text-[9px] tracking-widest uppercase">{c.type}</span>
+                  {c.player && <span className="text-[9px] text-accent" title="Your hardware">◆</span>}
                   <span className="ml-auto">
-                    {t?.programmable ? `${bytes ?? '?'}/${c.program_memory}B` : (stream ?? '')}
+                    {t?.programmable ? `${bytes ?? '?'}/${c.programMemory}B` : (stream ?? c.portFunctions?.join(' ') ?? '')}
                   </span>
                 </button>
               </li>

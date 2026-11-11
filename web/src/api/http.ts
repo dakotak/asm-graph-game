@@ -1,5 +1,5 @@
 // HTTP client for the library endpoints of `asmgraph web` (transport/web).
-import type { Diagnostic, PuzzleDocument, PuzzleSummary, SolutionInfo } from './types'
+import type { Diagnostic, PuzzleDocument, PuzzleSummary, ScoreDimension, ScoreRecord, ScoreResponse, SolutionInfo } from './types'
 
 export class ApiError extends Error {
   readonly status: number
@@ -53,6 +53,12 @@ export const http = {
       method: 'PUT',
       body: JSON.stringify({ yaml }),
     }),
+  getScores: (puzzleId: string) => request<ScoreRecord>(`/api/puzzles/${enc(puzzleId)}/scores`),
+  /** The server runs every test itself and records the score if all pass. */
+  submitScore: (puzzleId: string, yaml: string) =>
+    request<ScoreResponse>(`/api/puzzles/${enc(puzzleId)}/scores`, { method: 'POST', body: JSON.stringify({ yaml }) }),
+  getBestSolution: (puzzleId: string, dimension: ScoreDimension) =>
+    request<{ name: string; yaml: string }>(`/api/puzzles/${enc(puzzleId)}/scores/${enc(dimension)}/solution`),
 }
 
 /** Solution names accepted by the server. */

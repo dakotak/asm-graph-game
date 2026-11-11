@@ -83,6 +83,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return c.test(rest)
 	case "types":
 		return c.types(rest)
+	case "migrate":
+		return c.migrate(rest)
 	case "serve":
 		return c.serve(rest)
 	case "web":
@@ -107,7 +109,8 @@ commands:
   compile  PUZZLE SOLUTION     compile programs and report memory usage
   run      PUZZLE SOLUTION     run one test case (--test, --trace)
   test     PUZZLE SOLUTION     run every test case
-  types                        list registered cell types and instructions
+  types                        list registered cell types, hardware limits and instructions
+  migrate  FILE...             rewrite schema-v1 puzzles/solutions as schema v2 (--write)
   serve --stdio                serve JSON-RPC 2.0 on stdin/stdout
   web                          serve the browser IDE and HTTP/WebSocket API
   version                      print version information
@@ -249,6 +252,7 @@ func (c *cli) validate(args []string) int {
 		out := map[string]any{"valid": true, "puzzle": p.ID, "tests": len(p.Tests), "cells": len(p.Cells), "diagnostics": nonNil(l)}
 		if bp != nil {
 			out["programBytes"] = bp.TotalProgramBytes()
+			out["hardware"] = bp.Hardware
 		}
 		c.emitJSON(out)
 		return exitOK
@@ -257,6 +261,7 @@ func (c *cli) validate(args []string) int {
 	fmt.Fprintf(c.stdout, "puzzle %s (%s): valid — %d cells, %d test cases\n", p.ID, p.Name, len(p.Cells), len(p.Tests))
 	if bp != nil {
 		fmt.Fprintf(c.stdout, "solution: valid — %d connections, %d program bytes\n", bp.Topology.NumConnections(), bp.TotalProgramBytes())
+		printHardware(c.stdout, bp.Hardware)
 	}
 	return exitOK
 }
@@ -404,11 +409,32 @@ func (c *cli) test(args []string) int {
 		fmt.Fprintf(c.stdout, "ticks: total %d, max %d   instructions: %d   transfers: %d\n", s.TotalTicks, s.MaxTicks, s.TotalInstructions, s.TotalTransfers)
 		fmt.Fprintf(c.stdout, "program bytes: %d (%s)\n", s.TotalProgramBytes, formatBytes(s.ProgramBytes, bp))
 		fmt.Fprintf(c.stdout, "cells used: %d/%d   connections: %d\n", s.CellsUsed, s.CellsSupplied, s.Connections)
+		printHardware(c.stdout, bp.Hardware)
+		if res.Score != nil {
+			fmt.Fprintf(c.stdout, "score: cost %d   ticks %d (worst case)   bytes %d\n", res.Score.Cost, res.Score.Ticks, res.Score.Bytes)
+		} else {
+			fmt.Fprintln(c.stdout, "score: none (a solution must pass every test case to be scored)")
+		}
 	}
 	if !res.Passed {
 		return exitFailure
 	}
 	return exitOK
+}
+
+func printHardware(w io.Writer, h solution.HardwareReport) {
+	if !h.Allowed {
+		return
+	}
+	budget := ""
+	if h.MaxCost > 0 {
+		budget = fmt.Sprintf(" of %d", h.MaxCost)
+	}
+	var parts []string
+	for _, n := range h.Nodes {
+		parts = append(parts, fmt.Sprintf("%s %s %d", n.ID, n.Type, n.Cost))
+	}
+	fmt.Fprintf(w, "hardware cost: %d%s (%s)\n", h.TotalCost, budget, strings.Join(parts, ", "))
 }
 
 func formatBytes(m map[string]int, bp *engine.Blueprint) string {
@@ -486,6 +512,25 @@ func (c *cli) types(args []string) int {
 	}
 	for _, t := range info {
 		fmt.Fprintf(c.stdout, "%s — %s\n", t.Type, t.Description)
+		h := t.Hardware
+		fmt.Fprintf(c.stdout, "  hardware: %s, ports %d-%d (default %d)", h.Category, h.Ports.Min, h.Ports.Max, h.Ports.Default)
+		if h.PuzzleOnly {
+			fmt.Fprint(c.stdout, ", puzzle-only")
+		} else {
+			fmt.Fprintf(c.stdout, ", cost %d + %d/port", h.Cost.Base, h.Cost.PerPort)
+			for _, pc := range h.Cost.Properties {
+				fmt.Fprintf(c.stdout, " + %d per %d %s", pc.Cost, pc.Per, pc.Property)
+			}
+		}
+		if m := h.ProgramMemory; m != nil {
+			fmt.Fprintf(c.stdout, ", program memory %d-%d bytes (default %d)", m.Min, m.Max, m.Default)
+		}
+		fmt.Fprintln(c.stdout)
+		if f := h.PortFunctions; f != nil {
+			for _, fn := range f.Functions {
+				fmt.Fprintf(c.stdout, "  port function %-5s %-3s %s\n", fn.Name, fn.Direction, fn.Summary)
+			}
+		}
 		if t.Programmable {
 			var regs []string
 			for _, r := range t.Registers {
@@ -502,6 +547,56 @@ func (c *cli) types(args []string) int {
 				req = " (required)"
 			}
 			fmt.Fprintf(c.stdout, "  config %s: %s%s — %s\n", f.Name, f.Type, req, f.Description)
+		}
+	}
+	return exitOK
+}
+
+// migrate rewrites schema-v1 files as schema v2. Without --write it prints
+// the result; with --write it replaces each file in place.
+func (c *cli) migrate(args []string) int {
+	fs := c.flags("migrate")
+	write := fs.Bool("write", false, "rewrite the files in place")
+	pos, err := parse(fs, args)
+	if err != nil {
+		return exitUsage
+	}
+	if len(pos) == 0 {
+		fmt.Fprintln(c.stderr, "usage: asmgraph migrate FILE.yaml... [--write]")
+		return exitUsage
+	}
+	reg, err := c.registry()
+	if err != nil {
+		return c.fail(err)
+	}
+	for _, path := range pos {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return c.fail(err)
+		}
+		var out []byte
+		var notes []string
+		if puzzle.IsPuzzleYAML(data) {
+			out, notes, err = puzzle.MigrateYAML(data, reg)
+		} else {
+			out, notes, err = puzzle.MigrateSolutionYAML(data)
+		}
+		if err != nil {
+			return c.fail(fmt.Errorf("%s: %w", path, err))
+		}
+		if len(notes) == 0 {
+			fmt.Fprintf(c.stderr, "%s: already schema v2\n", path)
+			continue
+		}
+		for _, n := range notes {
+			fmt.Fprintf(c.stderr, "%s: %s\n", path, n)
+		}
+		if *write {
+			if err := os.WriteFile(path, out, 0o644); err != nil {
+				return c.fail(err)
+			}
+		} else {
+			c.stdout.Write(out)
 		}
 	}
 	return exitOK

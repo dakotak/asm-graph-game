@@ -1,0 +1,35 @@
+schema_version: 2
+puzzle: polynomial-design
+
+# A three-stage pipeline (2x, 2x, +3). Each stage holds 8 bytes, and all
+# three work on different values at once, so the worst case needs fewer
+# ticks than the single processor, at three times the hardware cost.
+# Cost: 3 × (10 + 2 ports × 2 + ⌈8 / 4⌉ × 2) = 54.
+hardware:
+  - {id: double1, type: standard, port_count: 2, program_memory: 8}
+  - {id: double2, type: standard, port_count: 2, program_memory: 8}
+  - {id: plus3, type: standard, port_count: 2, program_memory: 8}
+
+connections:
+  - from: {cell: x, port: P0}
+    to: {cell: double1, port: P0}
+  - from: {cell: double1, port: P1}
+    to: {cell: double2, port: P0}
+  - from: {cell: double2, port: P1}
+    to: {cell: plus3, port: P0}
+  - from: {cell: plus3, port: P1}
+    to: {cell: y, port: P0}
+
+programs:
+  double1: |
+    MOV P0, ACC
+    ADD ACC
+    MOV ACC, P1
+  double2: |
+    MOV P0, ACC
+    ADD ACC
+    MOV ACC, P1
+  plus3: |
+    MOV P0, ACC
+    ADD 3
+    MOV ACC, P1

@@ -1,6 +1,7 @@
 package cells_test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -110,7 +111,7 @@ func TestCoreBranching(t *testing.T) {
 }
 
 func TestStackOperations(t *testing.T) {
-	arch := cells.NewStack()
+	arch := cells.NewStackProcessor()
 	p := newProc(t, arch, map[string]any{"stack_size": 4})
 	execAll(t, arch, p, "PUSH 1\nPUSH 2\nPUSH 3\nSWAP\nDUP\nDEPTH")
 	st := p.Inspect()
@@ -133,7 +134,7 @@ func TestStackOperations(t *testing.T) {
 }
 
 func TestStackJSE(t *testing.T) {
-	arch := cells.NewStack()
+	arch := cells.NewStackProcessor()
 	p := newProc(t, arch, nil)
 	res, _ := asm.Compile("JSE 0", arch.ISA(), asm.Options{})
 	if out := p.Execute(&res.Instructions[0], nil); !out.Jump {
@@ -146,7 +147,7 @@ func TestStackJSE(t *testing.T) {
 }
 
 func TestStackConfig(t *testing.T) {
-	arch := cells.NewStack()
+	arch := cells.NewStackProcessor()
 	if errs := arch.ValidateConfig(map[string]any{"stack_size": 0}); len(errs) == 0 {
 		t.Error("stack_size 0 accepted")
 	}
@@ -200,7 +201,7 @@ func TestStreamCells(t *testing.T) {
 
 func TestRegistry(t *testing.T) {
 	r := cells.NewRegistry()
-	if got := strings.Join(r.Types(), ","); got != "input,output,stack,standard" {
+	if got := strings.Join(r.Types(), ","); got != "input,output,stack,stack_processor,standard" {
 		t.Errorf("types = %s", got)
 	}
 	if err := r.Register(cells.NewStandard()); err == nil {
@@ -211,7 +212,7 @@ func TestRegistry(t *testing.T) {
 // Declared state fields must match what Inspect actually reports, since
 // frontends lay out cells from the declaration before a run starts.
 func TestStateFieldsMatchInspect(t *testing.T) {
-	for _, arch := range []cell.Architecture{&cells.Standard{}, &cells.Stack{}} {
+	for _, arch := range []cell.Architecture{&cells.Standard{}, cells.NewStackProcessor()} {
 		inst, err := arch.New(cell.Spec{Config: map[string]any{}}, cell.Env{})
 		if err != nil {
 			t.Fatal(err)
@@ -227,5 +228,93 @@ func TestStateFieldsMatchInspect(t *testing.T) {
 				t.Errorf("%s: field %q kind %q does not match %T", arch.Type(), f.Name, f.Kind, v)
 			}
 		}
+	}
+}
+
+func TestPassiveStackOffers(t *testing.T) {
+	inst, err := cells.Stack{}.New(cell.Spec{PortCount: 4, Ports: []bool{true, true, true, true},
+		PortFunctions: []string{"PUSH", "pop", "PEEK", "SIZE"}, Config: map[string]any{"capacity": 2}}, cell.Env{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	per := inst.(cell.Peripheral)
+	offers := func() string {
+		var parts []string
+		for _, o := range per.Offers(nil) {
+			parts = append(parts, fmt.Sprintf("%s:%s=%d", o.Port, o.Op, o.Value))
+		}
+		return strings.Join(parts, " ")
+	}
+	// Empty: only PUSH and SIZE are ready.
+	if got := offers(); got != "P0:read=0 P3:write=0" {
+		t.Errorf("empty: %s", got)
+	}
+	per.Commit(vm.P0, cell.RequestRead, 5)
+	per.Commit(vm.P0, cell.RequestRead, 6)
+	// Full: PUSH is withdrawn; POP and PEEK offer the top.
+	if got := offers(); got != "P1:write=6 P2:write=6 P3:write=2" {
+		t.Errorf("full: %s", got)
+	}
+	per.Commit(vm.P2, cell.RequestWrite, 6) // PEEK leaves the stack alone
+	per.Commit(vm.P1, cell.RequestWrite, 6) // POP removes the top
+	if st := inst.Inspect()["stack"].([]vm.Word); len(st) != 1 || st[0] != 5 {
+		t.Errorf("stack after peek+pop: %v", st)
+	}
+	if inst.(cell.PortDescriber).PortFunction(vm.P1) != "POP" {
+		t.Error("port functions are normalised to upper case")
+	}
+	// Default assignment when the player does not choose.
+	inst, _ = cells.Stack{}.New(cell.Spec{PortCount: 6, Ports: make([]bool, 6)}, cell.Env{})
+	if got := inst.(cell.PortDescriber).PortFunction(vm.PortN(5)); got != "POP" {
+		t.Errorf("default P5 = %s", got)
+	}
+}
+
+func TestHardwareSpecs(t *testing.T) {
+	for _, a := range cells.Builtins() {
+		if err := cell.CheckHardwareSpec(a); err != nil {
+			t.Error(err)
+		}
+	}
+	h := cell.HardwareOf(cells.Stack{})
+	if h.Category != cell.CategoryPeripheral || !h.Ports.Configurable() || h.PortFunctions == nil {
+		t.Errorf("stack spec %+v", h)
+	}
+	if h := cell.HardwareOf(cells.Input{}); !h.PuzzleOnly || h.Category != cell.CategoryIO {
+		t.Errorf("input spec %+v", h)
+	}
+	// Cost: base + per port + properties rounded up.
+	m := cell.CostModel{Base: 10, PerPort: 2, Properties: []cell.PropertyCost{{Property: "program_memory", Cost: 1, Per: 8}, {Property: "capacity", Cost: 3, Per: 4}}}
+	if got := cell.Cost(m, cell.HardwareConfig{Ports: 6, ProgramMemory: 9, Config: map[string]any{"capacity": 4}}); got != 10+12+2+3 {
+		t.Errorf("cost %d", got)
+	}
+	// The plugin's own limits.
+	errs := cell.ValidateHardware(cells.Stack{}, cell.HardwareConfig{Ports: 2, PortFunctions: []string{"PUSH", "SHIFT"}})
+	if len(errs) != 1 || errs[0].Field != "port_functions[1]" {
+		t.Errorf("unknown function: %+v", errs)
+	}
+	errs = cell.ValidateHardware(cells.NewStandard(), cell.HardwareConfig{Ports: 4, ProgramMemory: 0})
+	if len(errs) != 1 || errs[0].Field != "program_memory" {
+		t.Errorf("program memory: %+v", errs)
+	}
+	errs = cell.ValidateHardware(cells.Stack{}, cell.HardwareConfig{Ports: 4, ProgramMemory: 8})
+	if len(errs) != 1 || !strings.Contains(errs[0].Message, "not programmable") {
+		t.Errorf("memory on a peripheral: %+v", errs)
+	}
+}
+
+// Registration rejects hardware descriptions that are impossible.
+type badPorts struct{ cells.Stack }
+
+func (badPorts) Type() string { return "bad" }
+func (b badPorts) Hardware() cell.HardwareSpec {
+	h := b.Stack.Hardware()
+	h.Ports = cell.PortSpec{Min: 2, Max: 100, Default: 4}
+	return h
+}
+
+func TestRegistryChecksHardware(t *testing.T) {
+	if err := cell.NewRegistry().Register(badPorts{}); err == nil || !strings.Contains(err.Error(), "invalid port range") {
+		t.Errorf("got %v", err)
 	}
 }

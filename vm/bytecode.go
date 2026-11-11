@@ -10,7 +10,12 @@ import (
 
 // BytecodeVersion identifies the instruction encoding described in
 // docs/bytecode.md. Program images carry it so future encodings can coexist.
-const BytecodeVersion uint8 = 1
+// Version 2 added one-byte tags for ports P4..P63; every version-1 image is
+// also a valid version-2 image, so both are accepted when reading.
+const BytecodeVersion uint8 = 2
+
+// MinBytecodeVersion is the oldest program image version still accepted.
+const MinBytecodeVersion uint8 = 1
 
 // MaxProgramBytes is the largest program any cell may hold in V1.
 const MaxProgramBytes = 65535
@@ -57,12 +62,16 @@ type Operand struct {
 //	0x00..0x0F  register (0x00 = NIL, 0x01 = ACC, others per architecture)
 //	0x10..0x15  port P0, P1, P2, P3, ANY, LAST
 //	0x20        immediate, followed by a zigzag varint (int32 range)
+//	0x44..0x7F  port P4..P63 (0x40 + port number; 0x40..0x43 are invalid
+//	            because P0..P3 keep their original tags)
 //	0x80..0xFF  inline immediate -64..63 (low 7 bits, sign-extended)
 //
 // Target slots carry no tag: they are an unsigned LEB128 byte address.
 const (
 	tagPortBase   byte = 0x10
-	tagPortMax    byte = 0x15
+	tagPortAny    byte = 0x14
+	tagPortLast   byte = 0x15
+	tagPortHigh   byte = 0x40 // + port number, for P4..P63
 	tagImmVarint  byte = 0x20
 	tagInlineImm  byte = 0x80
 	InlineImmMin  Word = -64
@@ -105,10 +114,17 @@ func EncodeOperand(dst []byte, slot SlotKind, op Operand) ([]byte, error) {
 		}
 		return append(dst, op.Register), nil
 	case OperandPort:
-		if op.Port > PortLast {
-			return dst, fmt.Errorf("invalid port %d", op.Port)
+		switch {
+		case op.Port == PortAny:
+			return append(dst, tagPortAny), nil
+		case op.Port == PortLast:
+			return append(dst, tagPortLast), nil
+		case op.Port < LegacyPorts:
+			return append(dst, tagPortBase+byte(op.Port)), nil
+		case op.Port.Physical():
+			return append(dst, tagPortHigh+byte(op.Port)), nil
 		}
-		return append(dst, tagPortBase+byte(op.Port)), nil
+		return dst, fmt.Errorf("invalid port %d", op.Port)
 	case OperandImmediate:
 		if op.Value >= InlineImmMin && op.Value <= InlineImmMax {
 			return append(dst, tagInlineImm|(byte(op.Value)&0x7F)), nil
@@ -258,8 +274,14 @@ func decodeOperand(isa *ISA, slot SlotKind, b []byte) (Operand, int, error) {
 			return Operand{}, 0, fmt.Errorf("register 0x%02X not defined by architecture %s", t, isa.Name())
 		}
 		return Operand{Kind: OperandRegister, Register: t}, 1, nil
-	case t >= tagPortBase && t <= tagPortMax:
+	case t >= tagPortBase && t < tagPortBase+LegacyPorts:
 		return Operand{Kind: OperandPort, Port: Port(t - tagPortBase)}, 1, nil
+	case t == tagPortAny:
+		return Operand{Kind: OperandPort, Port: PortAny}, 1, nil
+	case t == tagPortLast:
+		return Operand{Kind: OperandPort, Port: PortLast}, 1, nil
+	case t >= tagPortHigh+LegacyPorts && t < tagPortHigh+MaxPorts:
+		return Operand{Kind: OperandPort, Port: Port(t - tagPortHigh)}, 1, nil
 	}
 	return Operand{}, 0, fmt.Errorf("invalid operand tag 0x%02X", t)
 }
@@ -332,7 +354,7 @@ func (p *Program) UnmarshalBinary(b []byte) error {
 		return errors.New("not an asmgraph program image")
 	}
 	ver := b[4]
-	if ver != BytecodeVersion {
+	if ver < MinBytecodeVersion || ver > BytecodeVersion {
 		return fmt.Errorf("unsupported bytecode version %d", ver)
 	}
 	rest := b[5:]

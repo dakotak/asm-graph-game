@@ -95,13 +95,33 @@ export function registerLanguages(catalog: CellTypeCatalog) {
   }
 }
 
+/**
+ * Physical ports are per cell (P0..P(n-1)), so completion and hover ask
+ * the editor which cell a model belongs to and how many ports it has.
+ */
+export interface PortContext {
+  count: number
+  /** peripheral function or peer description per port, for docs */
+  describe?: (index: number) => string | undefined
+}
+
+let portContext: (model: monaco.editor.ITextModel) => PortContext = () => ({ count: 4 })
+
+export function setPortContext(fn: (model: monaco.editor.ITextModel) => PortContext) {
+  portContext = fn
+}
+
+function physicalPorts(model: monaco.editor.ITextModel): string[] {
+  return Array.from({ length: portContext(model).count }, (_, i) => `P${i}`)
+}
+
 function monarch(t: CellTypeInfo, catalog: CellTypeCatalog): monaco.languages.IMonarchLanguage {
   const comment = catalog.syntax.comments.map((c) => c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') || '#'
   return {
     ignoreCase: true,
     defaultToken: 'invalid',
     mnemonics: (t.instructions ?? []).map((i) => i.mnemonic),
-    ports: catalog.ports.map((p) => p.name),
+    ports: catalog.ports.filter((p) => !p.physical).map((p) => p.name),
     registers: (t.registers ?? []).map((r) => r.name),
     tokenizer: {
       root: [
@@ -109,6 +129,7 @@ function monarch(t: CellTypeInfo, catalog: CellTypeCatalog): monaco.languages.IM
         [/[A-Za-z_]\w*(?=\s*:)/, 'label'],
         [/:/, 'delimiter'],
         [/[-+]?(0[xX][0-9a-fA-F]+|0[bB][01]+|0[oO][0-7]+|\d+)\b/, 'number'],
+        [/P(0|[1-9]\d?)\b/, 'port'],
         [/[A-Za-z_]\w*/, { cases: { '@mnemonics': 'keyword', '@ports': 'port', '@registers': 'register', '@default': 'identifier' } }],
         [/,/, 'delimiter'],
         [/\s+/, 'white'],
@@ -150,7 +171,12 @@ function completionProvider(t: CellTypeInfo, catalog: CellTypeCatalog): monaco.l
         for (const r of t.registers ?? []) {
           items.push({ label: r.name, kind: K.Variable, insertText: r.name, detail: 'register', documentation: r.summary, range })
         }
-        for (const p of catalog.ports) {
+        const ctxPorts = portContext(model)
+        physicalPorts(model).forEach((name, i) => {
+          const extra = ctxPorts.describe?.(i)
+          items.push({ label: name, kind: K.Interface, insertText: name, detail: extra ? `port · ${extra}` : 'port', documentation: `Physical port ${i} of this cell.${extra ? ` ${extra}.` : ''}`, range })
+        })
+        for (const p of catalog.ports.filter((p) => !p.physical)) {
           items.push({ label: p.name, kind: K.Interface, insertText: p.name, detail: 'port', documentation: p.description, range })
         }
       }
@@ -174,6 +200,14 @@ function hoverProvider(t: CellTypeInfo, catalog: CellTypeCatalog): monaco.langua
       const range = new monaco.Range(position.lineNumber, w.startColumn, position.lineNumber, w.endColumn)
       const ins = t.instructions?.find((i) => i.mnemonic === u)
       if (ins) return { range, contents: [{ value: instructionDoc(ins, catalog) }] }
+      const phys = /^P(0|[1-9]\d?)$/.exec(u)
+      if (phys) {
+        const ctx = portContext(model)
+        const i = Number(phys[1])
+        if (i >= ctx.count) return { range, contents: [{ value: `**${u}** — this cell has no such port (it has ${ctx.count}: P0–P${ctx.count - 1}).` }] }
+        const extra = ctx.describe?.(i)
+        return { range, contents: [{ value: `**${u}** — physical port ${i} of this cell${extra ? ` (${extra})` : ''}.` }] }
+      }
       const port = catalog.ports.find((p) => p.name === u)
       if (port) return { range, contents: [{ value: `**${port.name}** — ${port.description}` }] }
       const reg = t.registers?.find((r) => r.name === u)

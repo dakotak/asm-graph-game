@@ -25,16 +25,33 @@ func runCLI(t *testing.T, args ...string) (int, string, string) {
 
 const ex = "../../examples/"
 
-// Every example puzzle has a matching solution that passes every test,
-// through the CLI exactly as a user would run it.
+// Every example puzzle has at least one matching solution (NAME.yaml or
+// NAME-*.yaml) that passes every test, through the CLI exactly as a user
+// would run it.
 func TestExamplesPassThroughCLI(t *testing.T) {
 	puzzles, _ := filepath.Glob(ex + "puzzles/*.yaml")
-	if len(puzzles) < 5 {
-		t.Fatalf("expected at least 5 example puzzles, found %d", len(puzzles))
+	if len(puzzles) < 7 {
+		t.Fatalf("expected at least 7 example puzzles, found %d", len(puzzles))
 	}
 	for _, p := range puzzles {
-		sol := ex + "solutions/" + filepath.Base(p)
-		t.Run(filepath.Base(p), func(t *testing.T) {
+		name := strings.TrimSuffix(filepath.Base(p), ".yaml")
+		sols, _ := filepath.Glob(ex + "solutions/" + name + "-*.yaml")
+		if _, err := os.Stat(ex + "solutions/" + name + ".yaml"); err == nil {
+			sols = append(sols, ex+"solutions/"+name+".yaml")
+		}
+		if len(sols) == 0 {
+			t.Errorf("%s has no example solution", name)
+		}
+		for _, sol := range sols {
+			t.Run(filepath.Base(sol), func(t *testing.T) { examplePasses(t, p, sol) })
+		}
+	}
+}
+
+func examplePasses(t *testing.T, p, sol string) {
+	t.Helper()
+	{
+		{
 			if code, out, errs := runCLI(t, "validate", p, sol); code != 0 {
 				t.Fatalf("validate: %d\n%s%s", code, out, errs)
 			}
@@ -58,7 +75,7 @@ func TestExamplesPassThroughCLI(t *testing.T) {
 			if code, out, _ := runCLI(t, "run", p, sol, "--trace"); code != 0 || !strings.Contains(out, "transfer") {
 				t.Fatalf("run --trace: %d\n%s", code, out)
 			}
-		})
+		}
 	}
 }
 
@@ -77,9 +94,9 @@ func TestInvalidSolutionDiagnostics(t *testing.T) {
 	for _, want := range []string{
 		"double-input-broken.yaml:8:31: connections[1].from.port: port P2 is disabled",
 		"connections[2].from: port processor.P0 is already used",
-		`invalid port "P5"`,
+		`cell "processor" has no port P5`,
 		"double-input-broken.yaml:18: programs.processor: cell processor, line 2:1: unknown instruction MUL",
-		`"P9" is not a valid destination`,
+		`port P9 does not exist on this cell`,
 		`undefined label "LOOP"`,
 	} {
 		if !strings.Contains(errs, want) {
@@ -143,7 +160,7 @@ func TestServeStdio(t *testing.T) {
 		t.Fatalf("exit %d: %s", code, errb.String())
 	}
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
-	if len(lines) != 2 || !strings.Contains(lines[0], `"protocolVersion":"1"`) {
+	if len(lines) != 2 || !strings.Contains(lines[0], `"protocolVersion":"2"`) {
 		t.Fatalf("stdout must carry only protocol messages:\n%s", out.String())
 	}
 	if !strings.Contains(errb.String(), "serving JSON-RPC") {
@@ -179,4 +196,27 @@ func TestStaticPluginExample(t *testing.T) {
 func TestMain(m *testing.M) {
 	os.Unsetenv("ASMGRAPH_PLUGINS")
 	os.Exit(m.Run())
+}
+
+func TestMigrateAndScoreOutput(t *testing.T) {
+	code, out, errs := runCLI(t, "migrate", ex+"puzzles/reverse-sequences.yaml")
+	if code != 0 || !strings.Contains(out, "schema_version: 2") || !strings.Contains(out, "type: stack_processor") ||
+		!strings.Contains(errs, "stack → stack_processor") {
+		t.Fatalf("migrate: %d\n%s%s", code, out, errs)
+	}
+	if code, _, errs := runCLI(t, "migrate", ex+"puzzles/stack-reverse.yaml"); code != 0 || !strings.Contains(errs, "already schema v2") {
+		t.Fatalf("migrate v2: %d %s", code, errs)
+	}
+	code, out, _ = runCLI(t, "test", ex+"puzzles/stack-reverse.yaml", ex+"solutions/stack-reverse.yaml")
+	if code != 0 || !strings.Contains(out, "hardware cost: 32 of 50") || !strings.Contains(out, "score: cost 32") {
+		t.Fatalf("test: %d\n%s", code, out)
+	}
+	code, out, _ = runCLI(t, "types")
+	if code != 0 || !strings.Contains(out, "port function PUSH") || !strings.Contains(out, "hardware: peripheral, ports 2-8") {
+		t.Fatalf("types: %d\n%s", code, out)
+	}
+	code, out, _ = runCLI(t, "validate", ex+"puzzles/stack-reverse.yaml", ex+"solutions/invalid/stack-reverse-over-budget.yaml")
+	if code != 1 {
+		t.Fatalf("invalid hardware should fail validation: %d", code)
+	}
 }

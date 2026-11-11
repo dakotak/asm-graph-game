@@ -53,7 +53,8 @@ export function PuzzleBrowser() {
               <div className="flex items-baseline gap-2">
                 <span className="font-semibold text-fg">{p.name}</span>
                 <span className="font-mono text-[10px] text-fg-faint">{p.id}</span>
-                {solved.has(p.id) && <span className="text-[11px] text-ok">✓ solved</span>}
+                {(solved.has(p.id) || p.bests) && <span className="text-[11px] text-ok">✓ solved</span>}
+                {p.hardware && <span className="rounded-sm bg-accent/15 px-1 text-[10px] text-accent">build your hardware</span>}
                 {!p.valid && <span className="text-[11px] text-bad">✗ invalid: {p.diagnostics?.[0]?.message}</span>}
                 <span className="ml-auto font-mono text-[11px] text-fg-muted">
                   {p.difficulty !== undefined && <>difficulty {formatValue(p.difficulty)} · </>}
@@ -62,12 +63,17 @@ export function PuzzleBrowser() {
                 </span>
               </div>
               {p.description && <p className="mt-0.5 line-clamp-2 whitespace-pre-wrap text-fg-muted">{p.description.trim()}</p>}
-              <div className="mt-1 flex gap-1">
+              <div className="mt-1 flex items-center gap-1">
                 {p.cellTypes.map((t) => (
                   <span key={t} className="rounded-sm border border-line px-1 font-mono text-[10px] text-fg-muted">
                     {t}
                   </span>
                 ))}
+                {p.bests && (
+                  <span className="ml-auto font-mono text-[10px] text-fg-muted" title="Personal bests (each dimension separately)">
+                    best ¤{p.bests.cost?.score.cost ?? '—'} · {p.bests.ticks?.score.ticks ?? '—'} ticks · {p.bests.bytes?.score.bytes ?? '—'} bytes
+                  </span>
+                )}
               </div>
             </button>
           </li>
@@ -156,7 +162,7 @@ function fuzzy(q: string, text: string): boolean {
 export function CommandPalette() {
   const open = useUi((s) => s.palette)
   const puzzles = useWorkspace((s) => s.puzzles)
-  const cells = useWorkspace((s) => s.puzzleDoc?.puzzle.cells)
+  const cells = useWorkspace((s) => s.cells)
   const [q, setQ] = useState('')
   const [sel, setSel] = useState(0)
   const listRef = useRef<HTMLUListElement>(null)

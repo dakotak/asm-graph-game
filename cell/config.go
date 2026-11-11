@@ -88,6 +88,32 @@ func ValidateConfig(schema []ConfigField, cfg map[string]any) []ConfigError {
 	return errs
 }
 
+// WithDefaults returns cfg with every unset field that has a default filled
+// in, so costs and checks see the values the instance will actually use.
+// cfg itself is not modified; nil is returned when nothing is set.
+func WithDefaults(schema []ConfigField, cfg map[string]any) map[string]any {
+	var out map[string]any
+	for _, f := range schema {
+		if f.Default == nil {
+			continue
+		}
+		if _, set := cfg[f.Name]; set {
+			continue
+		}
+		if out == nil {
+			out = make(map[string]any, len(cfg)+1)
+			for k, v := range cfg {
+				out[k] = v
+			}
+		}
+		out[f.Name] = f.Default
+	}
+	if out == nil {
+		return cfg
+	}
+	return out
+}
+
 // ToInt64 converts YAML/JSON numeric values to int64.
 func ToInt64(v any) (int64, bool) {
 	switch n := v.(type) {
