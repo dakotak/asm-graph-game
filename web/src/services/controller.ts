@@ -2,8 +2,9 @@
 // backend session in sync with the edited solution, drives execution, and
 // turns committed events into store updates. It never simulates anything:
 // all machine behaviour comes from the Go engine.
-import { ApiError, http } from '../api/http'
-import { RpcClient, RpcError, defaultWsUrl, type ConnectionState } from '../api/rpc'
+import { ApiError, BrowserLibrary, type Library } from '../api/library'
+import { RpcClient, RpcError, type ConnectionState } from '../api/rpc'
+import { lastEngineError, workerSocketClass } from '../engine-wasm/workerSocket'
 import {
   PROTOCOL_VERSION,
   type AssembleResult,
@@ -26,7 +27,7 @@ import { autoLayout, NODE_HEIGHT, NODE_WIDTH } from '../lib/layout'
 import { adaptToPuzzle, emptySolution, parseSolution, serializeSolution, type Position, type SolutionModel } from '../lib/solution'
 import { applyEvents, emptyView, viewFromSnapshot } from '../lib/simReducer'
 import { isTerminal } from '../lib/status'
-import { clearDraft, loadDraft, markSolved, saveDraft, SPEEDS, usePrefs } from '../state/prefs'
+import { clearDraft, loadDraft, markSolved, safeStorage, saveDraft, SPEEDS, usePrefs } from '../state/prefs'
 import { notify, useSim, type EdgeActivity } from '../state/sim'
 import { useUi } from '../state/ui'
 import { cellStream, findCell, isProgrammableType, useWorkspace } from '../state/workspace'
@@ -40,14 +41,19 @@ const DRAFT_DEBOUNCE_MS = 1000
 const HARDWARE_CHECK_MS = 300
 
 export interface ControllerOptions {
+  /** connection URL; unused by the in-browser engine */
   wsUrl?: string
+  /** transport; defaults to the WebAssembly engine in a Web Worker */
   WebSocketImpl?: typeof WebSocket
+  /** puzzle library and saved work; defaults to browser storage */
+  library?: Library
   /** frame scheduler; defaults to requestAnimationFrame */
   schedule?: (fn: () => void) => void
 }
 
 export class Controller {
   rpc: RpcClient | null = null
+  readonly library: Library
   private initialized = false
   private queue: SimEvent[] = []
   private flushScheduled = false
@@ -74,6 +80,7 @@ export class Controller {
   }
 
   constructor(private opts: ControllerOptions = {}) {
+    this.library = opts.library ?? new BrowserLibrary((m, p) => this.call(m, p), safeStorage())
     this.schedule =
       opts.schedule ??
       ((fn) => {
@@ -88,8 +95,8 @@ export class Controller {
 
   async init(): Promise<void> {
     this.rpc = new RpcClient({
-      url: this.opts.wsUrl ?? defaultWsUrl(),
-      WebSocketImpl: this.opts.WebSocketImpl,
+      url: this.opts.wsUrl ?? 'asmgraph-engine',
+      WebSocketImpl: this.opts.WebSocketImpl ?? workerSocketClass(),
       onEvent: (e) => this.handleEvent(e),
       onState: (s, info) => this.onConnState(s, info.error),
     })
@@ -106,7 +113,7 @@ export class Controller {
   }
 
   private onConnState(s: ConnectionState, error?: string) {
-    useSim.setState({ conn: s, connError: s === 'open' ? null : (error ?? null) })
+    useSim.setState({ conn: s, connError: s === 'open' ? null : (lastEngineError ?? error ?? null) })
     if (s === 'open') void this.onOpen()
     if (s === 'reconnecting' || s === 'closed') {
       this.stopPolling()
@@ -121,8 +128,8 @@ export class Controller {
     try {
       const info = await this.call<{ protocolVersion: string; version: string }>('initialize')
       if (info.protocolVersion !== PROTOCOL_VERSION) {
-        useSim.setState({ connError: `Protocol mismatch: server speaks ${info.protocolVersion}, this app needs ${PROTOCOL_VERSION}.` })
-        notify('error', `Protocol mismatch: server ${info.protocolVersion}, client ${PROTOCOL_VERSION}. Rebuild the frontend.`, 0)
+        useSim.setState({ connError: `Protocol mismatch: the engine speaks ${info.protocolVersion}, this app needs ${PROTOCOL_VERSION}.` })
+        notify('error', `Protocol mismatch: engine ${info.protocolVersion}, app ${PROTOCOL_VERSION}. Rebuild the engine (npm run wasm).`, 0)
         return
       }
       useSim.setState({ serverVersion: info.version })
@@ -141,16 +148,16 @@ export class Controller {
         const doc = useWorkspace.getState().puzzleDoc
         if (doc) await this.call('loadPuzzle', { yaml: doc.yaml })
         this.resetSimState()
-        notify('warn', 'Reconnected to the server. The simulation was reset; your edits are intact.')
+        notify('warn', 'The engine was restarted. The simulation was reset; your edits are intact.')
         await this.pushBreakpoints()
       }
     } catch (e) {
-      notify('error', `Server initialization failed: ${errorText(e)}`)
+      notify('error', `Engine initialization failed: ${errorText(e)}`)
     }
   }
 
   reconnect() {
-    this.rpc?.reconnectNow().catch(() => notify('error', 'Still cannot reach the asmgraph server.'))
+    this.rpc?.reconnectNow().catch(() => notify('error', 'The engine still cannot start.'))
   }
 
   private call<T>(method: string, params?: unknown): Promise<T> {
@@ -265,7 +272,7 @@ export class Controller {
 
   async refreshPuzzles() {
     try {
-      useWorkspace.getState().setPuzzles(await http.listPuzzles())
+      useWorkspace.getState().setPuzzles(await this.library.listPuzzles())
     } catch (e) {
       notify('error', `Cannot list puzzles: ${errorText(e)}`)
     }
@@ -273,11 +280,35 @@ export class Controller {
 
   private programmable = (type: string) => isProgrammableType(useWorkspace.getState().catalog, type)
 
+  /** Adds a puzzle file to the browser library and opens it. */
+  async importPuzzle(file: string, yaml: string): Promise<boolean> {
+    try {
+      const summary = await this.library.importPuzzle(file, yaml)
+      await this.refreshPuzzles()
+      notify('success', `Imported puzzle "${summary.name}". It is stored in this browser.`)
+      if (!summary.valid) {
+        notify('warn', `"${summary.name}" has problems: ${summary.diagnostics?.find((d) => d.severity === 'error')?.message ?? 'see diagnostics'}`)
+        return false
+      }
+      useUi.setState({ browser: false })
+      return this.openPuzzle(summary.id)
+    } catch (e) {
+      const detail = e instanceof ApiError && e.diagnostics.length ? ` (${e.diagnostics[0].message})` : ''
+      notify('error', `Cannot import the puzzle: ${errorText(e)}${detail}`)
+      return false
+    }
+  }
+
+  async removeImportedPuzzle(id: string) {
+    await this.library.removePuzzle(id)
+    await this.refreshPuzzles()
+  }
+
   /** Opens a puzzle and its most recent solution (or a recovered draft). */
   async openPuzzle(id: string): Promise<boolean> {
     useSim.setState({ busy: 'Loading puzzle…' })
     try {
-      const doc = await http.getPuzzle(id)
+      const doc = await this.library.getPuzzle(id)
       if (!doc.summary.valid) {
         notify('error', `Puzzle "${id}" is invalid: ${doc.summary.diagnostics?.[0]?.message ?? 'see diagnostics'}`)
         useWorkspace.getState().setDiagnostics(doc.summary.diagnostics ?? [])
@@ -300,10 +331,10 @@ export class Controller {
         }
       }
       if (!model) {
-        const saved = await http.listSolutions(id).catch(() => [])
+        const saved = await this.library.listSolutions(id).catch(() => [])
         if (saved.length > 0) {
           const latest = [...saved].sort((a, b) => b.modified.localeCompare(a.modified))[0]
-          const s = await http.getSolution(id, latest.name)
+          const s = await this.library.getSolution(id, latest.name)
           try {
             model = adaptToPuzzle(parseSolution(s.yaml), doc.puzzle, this.programmable).solution
             name = latest.name
@@ -455,20 +486,20 @@ export class Controller {
 
   async loadBests(id: string) {
     try {
-      const r = await http.getScores(id)
+      const r = await this.library.getScores(id)
       if (useWorkspace.getState().puzzleDoc?.puzzle.id === id) useWorkspace.getState().setBests(r, null)
     } catch {
       /* bests are optional */
     }
   }
 
-  /** Submits a passing solution; the server re-runs it and keeps per-dimension bests. */
+  /** Submits a passing solution; the engine re-runs it, and per-dimension bests are kept. */
   private async submitScore() {
     const ws = useWorkspace.getState()
     if (!ws.solution || !ws.puzzleDoc) return
     const id = ws.puzzleDoc.puzzle.id
     try {
-      const r = await http.submitScore(id, serializeSolution(ws.solution))
+      const r = await this.library.submitScore(id, serializeSolution(ws.solution))
       if (useWorkspace.getState().puzzleDoc?.puzzle.id !== id) return
       useWorkspace.getState().setBests(r.record, r)
       if (r.improved.length) notify('success', `New personal best: ${r.improved.join(', ')}.`, 4000)
@@ -775,7 +806,7 @@ export class Controller {
     const target = name ?? ws.solutionName
     if (!target) return false
     try {
-      await http.saveSolution(ws.solution.puzzle, target, serializeSolution(ws.solution))
+      await this.library.saveSolution(ws.solution.puzzle, target, serializeSolution(ws.solution))
       useWorkspace.getState().markSaved(target)
       clearDraft(ws.solution.puzzle)
       notify('success', `Saved "${target}".`, 2000)
@@ -793,7 +824,7 @@ export class Controller {
     const doc = ws.puzzleDoc
     if (!doc) return false
     try {
-      const s = await http.getSolution(doc.puzzle.id, name)
+      const s = await this.library.getSolution(doc.puzzle.id, name)
       const { solution, warnings } = adaptToPuzzle(parseSolution(s.yaml), doc.puzzle, this.programmable)
       this.applySolution(solution, name, false)
       warnings.forEach((w) => notify('warn', w))
@@ -810,7 +841,7 @@ export class Controller {
     const doc = useWorkspace.getState().puzzleDoc
     if (!doc) return false
     try {
-      const s = await http.getBestSolution(doc.puzzle.id, dimension)
+      const s = await this.library.getBestSolution(doc.puzzle.id, dimension)
       const { solution, warnings } = adaptToPuzzle(parseSolution(s.yaml), doc.puzzle, this.programmable)
       this.applySolution(solution, '', true)
       warnings.forEach((w) => notify('warn', w))
@@ -840,7 +871,7 @@ export class Controller {
     const { solution, warnings } = adaptToPuzzle(parsed, doc.puzzle, this.programmable)
     this.applySolution(solution, '', true)
     warnings.forEach((w) => notify('warn', w))
-    notify('success', 'Solution imported. Save it to keep it on the server.')
+    notify('success', 'Solution imported. Save it to keep it in this browser.')
   }
 
   exportYaml(): { filename: string; yaml: string } | null {

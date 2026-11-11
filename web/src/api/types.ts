@@ -176,6 +176,8 @@ export interface PuzzleSummary {
   solutions: number
   /** players build their own hardware */
   hardware: boolean
+  /** imported by the player (stored in this browser) */
+  imported?: boolean
   bests?: Partial<Record<ScoreDimension, ScoreEntry>>
 }
 

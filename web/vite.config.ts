@@ -1,14 +1,41 @@
 /// <reference types="vitest/config" />
 import { fileURLToPath } from 'node:url'
-import { defineConfig } from 'vite'
+import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 
-// The Go server (`asmgraph web`) listens here by default.
-const backend = process.env.ASMGRAPH_BACKEND ?? 'http://127.0.0.1:7357'
+// The engine is Go compiled to WebAssembly (scripts/build-wasm.sh writes it
+// to public/engine/), so the app is entirely static: no backend at all.
+
+/**
+ * Content Security Policy for production builds (dev needs inline scripts
+ * for hot reload). 'wasm-unsafe-eval' allows compiling the engine; nothing
+ * is loaded from other origins.
+ */
+function csp(): Plugin {
+  const policy = [
+    "default-src 'self'",
+    "script-src 'self' 'wasm-unsafe-eval'",
+    "worker-src 'self'",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data:",
+    "font-src 'self' data:",
+    "connect-src 'self'",
+    "object-src 'none'",
+    "base-uri 'none'",
+  ].join('; ')
+  return {
+    name: 'asmgraph-csp',
+    apply: 'build',
+    transformIndexHtml: (html) => html.replace('<head>', `<head>\n    <meta http-equiv="Content-Security-Policy" content="${policy}" />`),
+  }
+}
 
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [react(), tailwindcss(), csp()],
+  // Relative asset URLs, so the build can be hosted under any path.
+  base: './',
+  worker: { format: 'es' },
   resolve: {
     alias: [
       // Monaco's CSS files are not covered by its package "exports" map.
@@ -21,9 +48,8 @@ export default defineConfig({
   server: {
     host: '127.0.0.1',
     port: 5173,
-    proxy: {
-      '/api': { target: backend, ws: true, changeOrigin: false },
-    },
+    // The bundled puzzles live in the repository's examples/ directory.
+    fs: { allow: ['..'] },
   },
   preview: { host: '127.0.0.1' },
   build: {

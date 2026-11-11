@@ -4,12 +4,31 @@ import { readFile } from 'node:fs/promises'
 // These tests drive the real UI against the real Go backend (see
 // playwright.config.ts): every size, result and status comes from the engine.
 
+/** Saves a solution in browser storage before the app starts. */
+async function seedSolution(page: Page, puzzle: string, name: string, file: string) {
+  const yaml = await readFile(new URL(`../../examples/solutions/${file}`, import.meta.url), 'utf8')
+  await page.addInitScript(
+    ([key, name, yaml]) => localStorage.setItem(key, JSON.stringify({ [name]: { yaml, modified: '2026-01-01T00:00:00Z' } })),
+    [`asmgraph.solutions.${puzzle}`, name, yaml],
+  )
+}
+
+/** Reads a JSON value from the app's browser storage. */
+async function stored(page: Page, key: string) {
+  return page.evaluate((k) => JSON.parse(localStorage.getItem(k) ?? 'null'), key)
+}
+
 async function openPuzzle(page: Page, id: string) {
   await page.goto('/')
   await expect(page.getByTestId('connection')).toHaveAttribute('data-state', 'open')
-  const item = page.getByTestId(`puzzle-${id}`)
-  if (!(await item.isVisible())) await page.getByTestId('puzzle-button').click()
-  await item.click()
+  // A fresh start opens the puzzle browser once the engine has summarized
+  // the library; otherwise the last puzzle reopens. Wait for one of the two
+  // before deciding whether to open the browser, or a click could land on
+  // the toolbar just as the dialog covers it.
+  const dialog = page.getByRole('dialog', { name: 'Puzzles' })
+  await expect(dialog.or(page.getByTestId('puzzle-sidebar'))).toBeVisible()
+  if (!(await dialog.isVisible())) await page.getByTestId('puzzle-button').click()
+  await page.getByTestId(`puzzle-${id}`).click()
   await expect(page.getByTestId('puzzle-sidebar')).toBeVisible()
   await expect(page.locator('.react-flow__node').first()).toBeVisible()
   await waitForStableViewport(page)
@@ -50,7 +69,7 @@ async function drag(page: Page, from: Locator, to: Locator) {
 
 const port = (page: Page, cell: string, p: string) => page.locator(`[data-testid="cell-${cell}"] [data-port="${p}"]`)
 
-test('build, compile, test and save a solution from scratch', async ({ page, request }) => {
+test('build, compile, test and save a solution from scratch', async ({ page }) => {
   await openPuzzle(page, 'filter-positive')
   await expect(page.locator('.react-flow__node')).toHaveCount(3)
 
@@ -72,12 +91,13 @@ test('build, compile, test and save a solution from scratch', async ({ page, req
   await expect(page.getByTestId('modal-input')).toHaveValue('main')
   await page.getByTestId('modal-confirm').click()
   await expect(page.getByTestId('dirty-indicator')).toHaveCount(0)
-  const saved = await (await request.get('/api/puzzles/filter-positive/solutions/main')).json()
-  expect(saved.yaml).toContain('JGZ SEND')
-  expect(saved.yaml).toContain('cell: filter')
+  const saved = await stored(page, 'asmgraph.solutions.filter-positive')
+  expect(saved.main.yaml).toContain('JGZ SEND')
+  expect(saved.main.yaml).toContain('cell: filter')
 })
 
 test('compile errors appear in the editor and the diagnostics panel without losing edits', async ({ page }) => {
+  await seedSolution(page, 'double-input', 'reference', 'double-input.yaml')
   await openPuzzle(page, 'double-input') // loads the seeded "reference" solution
   await expect(page.getByTestId('memory-value')).toHaveText('10 / 32 bytes')
   await page.locator('.monaco-editor .view-lines').click()
@@ -92,6 +112,7 @@ test('compile errors appear in the editor and the diagnostics panel without losi
 })
 
 test('step, run to completion and reset follow the engine', async ({ page }) => {
+  await seedSolution(page, 'double-input', 'reference', 'double-input.yaml')
   await openPuzzle(page, 'double-input')
   await page.getByTestId('step').click()
   await expect(page.getByTestId('tick')).toHaveText('00001')
@@ -135,6 +156,7 @@ test('invalid connections are rejected in the graph', async ({ page }) => {
 })
 
 test('export and re-import solution YAML', async ({ page }) => {
+  await seedSolution(page, 'double-input', 'reference', 'double-input.yaml')
   await openPuzzle(page, 'double-input')
   await page.keyboard.press('ControlOrMeta+Shift+p')
   await page.getByPlaceholder('Type a command, cell or puzzle…').fill('export')
@@ -154,7 +176,7 @@ test('export and re-import solution YAML', async ({ page }) => {
   await expect(page.getByTestId('dirty-indicator')).toBeVisible()
 })
 
-test('design hardware: add a processor and a passive stack, configure, wire, pass and get scored', async ({ page, request }) => {
+test('design hardware: add a processor and a passive stack, configure, wire, pass and get scored', async ({ page }) => {
   await openPuzzle(page, 'stack-reverse')
   const palette = page.getByTestId('hardware-palette')
   await expect(palette).toContainText('requires at least 1 stack') // backend constraint, before anything runs
@@ -201,7 +223,7 @@ test('design hardware: add a processor and a passive stack, configure, wire, pas
   await expect(page.getByTestId('score-ticks')).toContainText('92')
   await expect(page.getByTestId('score-bytes')).toContainText('26')
   await expect(page.getByTestId('score-cost')).toContainText('new best')
-  const bests = await (await request.get('/api/puzzles/stack-reverse/scores')).json()
+  const bests = await stored(page, 'asmgraph.bests.stack-reverse')
   expect(bests.bests.cost.score).toEqual({ cost: 32, ticks: 92, bytes: 26 })
 
   // Removing a node removes its wires too.
@@ -209,4 +231,19 @@ test('design hardware: add a processor and a passive stack, configure, wire, pas
   await page.getByTestId('hardware-config').getByRole('button', { name: 'Remove stack1' }).click()
   await expect(page.getByTestId('cell-stack1')).toHaveCount(0)
   await expect(edges).toHaveCount(2)
+})
+
+test('import a puzzle file into the browser library', async ({ page }) => {
+  await page.goto('/')
+  await expect(page.getByRole('dialog', { name: 'Puzzles' })).toBeVisible() // a fresh start opens the browser
+  const yaml = (await readFile(new URL('../../examples/puzzles/double-input.yaml', import.meta.url), 'utf8')).replace('id: double-input', 'id: my-double').replace('name: Double the Input', 'name: My Double')
+  const chooser = page.waitForEvent('filechooser')
+  await page.getByTestId('import-puzzle').click()
+  await (await chooser).setFiles({ name: 'my-double.yaml', mimeType: 'text/yaml', buffer: Buffer.from(yaml) })
+  // Validated by the engine, stored in the browser, and opened.
+  await expect(page.getByTestId('puzzle-sidebar')).toContainText('My Double')
+  expect(Object.keys(await stored(page, 'asmgraph.puzzles'))).toEqual(['my-double'])
+  await page.reload()
+  await page.getByTestId('puzzle-button').click()
+  await expect(page.getByTestId('puzzle-my-double')).toContainText('imported')
 })

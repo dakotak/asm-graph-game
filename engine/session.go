@@ -269,6 +269,13 @@ func (s *Session) Run(maxTicks int64) (*TestResult, error) {
 // RunAsync starts a background run that executes ticks until the machine
 // terminates, maxTicks more ticks have run (<= 0: unlimited), or Pause is
 // called. delay paces ticks for animation; it never affects results.
+// RunYield, when positive, makes an unpaced asynchronous run (delay 0)
+// pause for a millisecond after every RunYield of work. Single-threaded
+// hosts such as WebAssembly in a browser need this: their goroutines only
+// let other work (a "pause" request, event delivery) in when they block.
+// Native builds leave it at zero.
+var RunYield time.Duration
+
 func (s *Session) RunAsync(maxTicks int64, delay time.Duration, onDone func(Status)) error {
 	s.stopRun()
 	s.mu.Lock()
@@ -282,6 +289,7 @@ func (s *Session) RunAsync(maxTicks int64, delay time.Duration, onDone func(Stat
 	go func() {
 		defer close(rs.done)
 		var n int64
+		slice := time.Now()
 		for {
 			select {
 			case <-rs.stop:
@@ -316,12 +324,17 @@ func (s *Session) RunAsync(maxTicks int64, delay time.Duration, onDone func(Stat
 				return
 			}
 			s.mu.Unlock()
-			if delay > 0 {
+			wait := delay
+			if wait <= 0 && RunYield > 0 && time.Since(slice) >= RunYield {
+				wait = time.Millisecond
+			}
+			if wait > 0 {
 				select {
 				case <-rs.stop:
 					return
-				case <-time.After(delay):
+				case <-time.After(wait):
 				}
+				slice = time.Now()
 			}
 		}
 	}()

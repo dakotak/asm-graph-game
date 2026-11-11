@@ -24,8 +24,9 @@ player's solution (connections and programs) is a **separate YAML file**.
 
 The engine is a Go library with a CLI, a JSON-RPC 2.0 interface (over
 stdio or WebSocket), and a **browser IDE** with a graph editor, a Monaco
-assembly editor, and a debugger. All of them drive the same engine; see
-[docs/web.md](docs/web.md).
+assembly editor, a hardware designer, and a debugger. The IDE needs no
+server: the same Go engine is compiled to **WebAssembly** and runs in the
+browser. See [docs/web.md](docs/web.md).
 
 ## Quick start
 
@@ -52,13 +53,14 @@ program bytes: 10 (processor 10/32)
 cells used: 3/3   connections: 2
 ```
 
-Run the web IDE (build the frontend once, then serve it):
+Run the web IDE (builds the WebAssembly engine, then starts Vite):
 
 ```bash
-cd web && npm ci && npm run build && cd .. && go run ./cmd/asmgraph web
+cd web && npm ci && npm run dev
 ```
 
-Then open <http://127.0.0.1:7357>.
+Then open <http://127.0.0.1:5173>. `npm run build` produces a static site
+in `web/dist/` that any static host can serve.
 
 More commands:
 
@@ -116,8 +118,11 @@ scoring/           score comparison (per dimension, Pareto) and personal-best st
 protocol/          transport-independent command/event service
 transport/jsonrpc/ shared JSON-RPC 2.0 message handling
 transport/stdio/   JSON-RPC 2.0 over newline-delimited stdio
-transport/web/     HTTP library API + WebSocket JSON-RPC for browsers
+transport/web/     optional HTTP/WebSocket server for other clients; can serve the IDE
 cmd/asmgraph/      CLI
+cmd/asmgraph-wasm/ the engine compiled to WebAssembly for the browser IDE
+library/           puzzle summaries for puzzle browsers (server and browser)
+scripts/           build-wasm.sh
 diag/              structured diagnostics
 web/               browser IDE (React, TypeScript, Vite, React Flow, Monaco)
 examples/          puzzles, solutions, plugin example
@@ -138,6 +143,6 @@ docs/              documentation
 | [Execution model](docs/execution.md) | Ticks, communication, ANY/LAST, completion, deadlock and cycle detection |
 | [Plugins and validators](docs/plugins.md) | Writing and registering cell types; custom validators |
 | [JSON-RPC protocol](docs/protocol.md) | Commands, events, snapshots |
-| [Web IDE](docs/web.md) | Browser IDE: setup, HTTP/WebSocket API, frontend architecture, testing, extending |
+| [Web IDE](docs/web.md) | Browser IDE: setup, the WebAssembly engine, browser storage, frontend architecture, testing, extending; the optional Go server |
 | [Frontends and debugging](docs/frontends.md) | Integration guide, debugging workflow, puzzle editors |
 | [Known limitations](docs/limitations.md) | What V1 deliberately does not do |

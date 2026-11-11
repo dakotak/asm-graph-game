@@ -6,3 +6,4 @@ web/dist/
 web/test-results/
 web/playwright-report/
 web/.e2e-solutions/
+web/public/engine/

@@ -236,12 +236,12 @@ processor, or for cost 54 in 28 ticks with a three-stage pipeline.
 The CLI prints it after `asmgraph test`, and the web IDE shows it after
 **Run all tests**.
 
-**Personal bests** are kept per dimension by the web server
-(`scoring.Store`): `solutions/<puzzle>/bests/scores.json`, plus the
-solution that achieved each best (`best-cost.yaml`, `best-ticks.yaml`,
-`best-bytes.yaml`). The browser never reports a score: it posts the
-solution, and the server re-runs every test and computes the score
-itself. A new result replaces a best only if it is strictly better in
+**Personal bests** are kept per dimension, together with the solution
+that achieved each one. The web IDE keeps them in browser storage; the
+optional Go server keeps them as files (`scoring.Store`:
+`solutions/<puzzle>/bests/`). Either way the score comes from the engine
+(`evaluateSolution`, or the server's scores endpoint), which re-validates
+the solution and runs every test itself; the UI never computes a score. A new result replaces a best only if it is strictly better in
 that dimension; ties are broken by the other dimensions in the order
 cost, ticks, bytes. `scoring.Dominates` and `scoring.Frontier` give
 Pareto comparisons for future leaderboards.

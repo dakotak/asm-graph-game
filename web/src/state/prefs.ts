@@ -28,7 +28,8 @@ export interface PrefsState {
   saveLayout(id: string, layout: Record<string, number>): void
 }
 
-function safeStorage(): Storage {
+/** localStorage, or an in-memory stand-in when it is unavailable. */
+export function safeStorage(): Storage {
   try {
     const k = '__asmgraph_probe__'
     window.localStorage.setItem(k, '1')

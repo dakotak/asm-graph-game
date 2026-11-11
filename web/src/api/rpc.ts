@@ -102,7 +102,7 @@ export class RpcClient {
         if (this.ws !== ws) return
         this.ws = null
         this.failPending('connection lost')
-        if (!opened) reject(new RpcError(RPC_CONNECTION_LOST, 'cannot connect to the asmgraph server'))
+        if (!opened) reject(new RpcError(RPC_CONNECTION_LOST, 'cannot start the asmgraph engine'))
         if (this.closedByUser) {
           this.setState('closed')
           return
@@ -186,7 +186,7 @@ export class RpcClient {
   call<T = unknown>(method: string, params?: unknown): Promise<T> {
     const ws = this.ws
     if (!ws || this.state !== 'open') {
-      return Promise.reject(new RpcError(RPC_CONNECTION_LOST, 'not connected to the asmgraph server'))
+      return Promise.reject(new RpcError(RPC_CONNECTION_LOST, 'the asmgraph engine is not running'))
     }
     const id = this.nextId++
     return new Promise<T>((resolve, reject) => {

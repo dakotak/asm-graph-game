@@ -5,7 +5,7 @@ import { useSim } from '../state/sim'
 import { useUi } from '../state/ui'
 import { useWorkspace } from '../state/workspace'
 import { usePrefs } from '../state/prefs'
-import { FakeServer, RpcFailure, catalog, fakeFetch, snapshot, tick, until } from '../test/fakeBackend'
+import { FakeServer, RpcFailure, catalog, fakeLibrary, snapshot, tick, until } from '../test/fakeBackend'
 import type { Puzzle } from '../api/types'
 
 const initialWs = useWorkspace.getState()
@@ -15,11 +15,10 @@ const initialUi = useUi.getState()
 let server: FakeServer
 let c: Controller
 
-async function boot(opts: { solutions?: Record<string, string>; handlers?: ConstructorParameters<typeof FakeServer>[0]; fetch?: Parameters<typeof fakeFetch>[0] } = {}) {
+async function boot(opts: { solutions?: Record<string, string>; handlers?: ConstructorParameters<typeof FakeServer>[0]; fetch?: Parameters<typeof fakeLibrary>[0] } = {}) {
   server = new FakeServer(opts.handlers)
-  const f = fakeFetch({ solutions: opts.solutions, ...opts.fetch })
-  vi.stubGlobal('fetch', f.fn)
-  c = new Controller({ wsUrl: 'ws://test/api/ws', WebSocketImpl: server.makeSocketClass(), schedule: (fn) => queueMicrotask(fn) })
+  const f = fakeLibrary({ solutions: opts.solutions, ...opts.fetch })
+  c = new Controller({ wsUrl: 'engine', WebSocketImpl: server.makeSocketClass(), library: f.library, schedule: (fn) => queueMicrotask(fn) })
   await c.init()
   await until(() => useWorkspace.getState().catalog !== null && useUi.getState().browser)
   return f
@@ -88,8 +87,7 @@ describe('Controller', () => {
 
   it('reports a protocol mismatch', async () => {
     server = new FakeServer({ initialize: () => ({ protocolVersion: '99', version: 'x' }) })
-    vi.stubGlobal('fetch', fakeFetch().fn)
-    c = new Controller({ wsUrl: 'ws://t', WebSocketImpl: server.makeSocketClass(), schedule: queueMicrotask })
+    c = new Controller({ wsUrl: 'engine', WebSocketImpl: server.makeSocketClass(), library: fakeLibrary().library, schedule: queueMicrotask })
     await c.init()
     await until(() => !!useSim.getState().connError)
     expect(useSim.getState().connError).toMatch(/Protocol mismatch/)
@@ -204,8 +202,8 @@ describe('Controller', () => {
     expect(useWorkspace.getState().dirty).toBe(true)
     expect(await c.save('main')).toBe(true)
     expect(useWorkspace.getState().dirty).toBe(false)
-    expect(f.puts[0].url).toBe('/api/puzzles/double-input/solutions/main')
-    expect(JSON.parse(f.puts[0].body).yaml).toContain('MOV P0, P1')
+    expect(f.puts[0]).toMatchObject({ puzzle: 'double-input', name: 'main' })
+    expect(f.puts[0].yaml).toContain('MOV P0, P1')
   })
 
   it('recovers after the backend disconnects, keeping edits', async () => {
@@ -220,7 +218,7 @@ describe('Controller', () => {
     const loadsBefore = server.methods().filter((m) => m === 'loadPuzzle').length
     c.reconnect()
     await until(() => server.methods().filter((m) => m === 'loadPuzzle').length > loadsBefore)
-    await until(() => useSim.getState().notices.some((n) => /Reconnected/.test(n.text)))
+    await until(() => useSim.getState().notices.some((n) => /engine was restarted/.test(n.text)))
     expect(useSim.getState().started).toBe(false)
     expect(useSim.getState().loadedVersion).toBe(-1)
     expect(useWorkspace.getState().solution?.programs.processor).toBe('MOV P0, P1')

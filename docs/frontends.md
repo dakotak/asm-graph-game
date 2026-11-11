@@ -1,7 +1,7 @@
 # Frontends and debugging
 
-The repository includes a browser IDE (`asmgraph web`, see
-[web.md](web.md)). The engine was designed so that other frontends (TUIs,
+The repository includes a browser IDE that runs the engine as WebAssembly
+(see [web.md](web.md)). The engine was designed so that other frontends (TUIs,
 desktop apps, IDE extensions, automation) can be built on it without
 copying game rules.
 
@@ -12,7 +12,8 @@ copying game rules.
 | Spawn `asmgraph serve --stdio` and speak JSON-RPC | Any language. Editors, TUIs, desktop apps. |
 | Import `asmgraph/engine` and use `engine.Session` | Go frontends and tools |
 | Run `asmgraph test --json` | CI, graders, batch evaluation |
-| Connect to `asmgraph web` (`/api/ws` plus the HTTP library API) | Browser frontends. This is what the bundled web IDE uses. |
+| Load `asmgraph.wasm` (`cmd/asmgraph-wasm`) and call `asmgraphEngine.handle(json)` | Browser or Node frontends with no server. This is what the bundled web IDE uses (in a Web Worker). |
+| Connect to `asmgraph web` (`/api/ws` plus the HTTP library API) | Clients that want a shared server with file storage |
 
 ## Building a player UI
 
