@@ -253,7 +253,10 @@ func (m *Machine) Step() Status {
 		}
 		if r.dev != nil {
 			r.dev.CommitRead(t.rp, v)
-			if r.check != nil && r.check.Observe(v) {
+			if r.check != nil {
+				// Report every received value, not only pass/fail
+				// changes, so frontends can show progress as it arrives.
+				r.check.Observe(v)
 				outChanged = append(outChanged, r)
 			}
 		} else {

@@ -117,10 +117,12 @@ test('invalid connections are rejected in the graph', async ({ page }) => {
   await openPuzzle(page, 'distributed-polynomial')
   const edges = page.locator('.react-flow__edge')
   await expect(edges).toHaveCount(0)
-  await drag(page, port(page, 'alpha', 'P0'), port(page, 'y', 'P1')) // disabled by the puzzle
+  // Ports the puzzle disables are not rendered: I/O cells show one port.
+  await expect(page.getByTestId('cell-y').locator('[data-port]')).toHaveCount(1)
+  await expect(page.getByTestId('cell-x').locator('[data-port]')).toHaveCount(1)
+  await expect(page.getByTestId('cell-alpha').locator('[data-port]')).toHaveCount(4)
   await drag(page, port(page, 'alpha', 'P0'), port(page, 'alpha', 'P1')) // self connection
   await expect(edges).toHaveCount(0)
-  await expect(port(page, 'y', 'P1')).toHaveAttribute('data-visual', 'disabled')
   // A valid one still works, and deleting it with the keyboard removes it.
   await drag(page, port(page, 'alpha', 'P1'), port(page, 'y', 'P0'))
   await expect(edges).toHaveCount(1)

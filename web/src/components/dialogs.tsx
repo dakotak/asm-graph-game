@@ -330,7 +330,7 @@ export function HelpDialog() {
               <li>
                 <span className="text-accent">■</span> accent — value transferred this tick
               </li>
-              <li>⬚ dashed with × — disabled by the puzzle</li>
+              <li>Ports the puzzle disables are not shown.</li>
             </ul>
           </section>
           {catalog && (

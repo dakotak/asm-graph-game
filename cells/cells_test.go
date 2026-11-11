@@ -207,3 +207,25 @@ func TestRegistry(t *testing.T) {
 		t.Error("duplicate registration accepted")
 	}
 }
+
+// Declared state fields must match what Inspect actually reports, since
+// frontends lay out cells from the declaration before a run starts.
+func TestStateFieldsMatchInspect(t *testing.T) {
+	for _, arch := range []cell.Architecture{&cells.Standard{}, &cells.Stack{}} {
+		inst, err := arch.New(cell.Spec{Config: map[string]any{}}, cell.Env{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		state := inst.Inspect()
+		for _, f := range arch.(cell.StateDescriber).StateFields() {
+			v, ok := state[f.Name]
+			if !ok {
+				t.Errorf("%s: declared field %q missing from Inspect", arch.Type(), f.Name)
+				continue
+			}
+			if _, isList := v.([]vm.Word); isList != (f.Kind == "list") {
+				t.Errorf("%s: field %q kind %q does not match %T", arch.Type(), f.Name, f.Kind, v)
+			}
+		}
+	}
+}

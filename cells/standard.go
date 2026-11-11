@@ -30,6 +30,12 @@ func (*Standard) Description() string {
 	return "Accumulator processor with ACC and a backup register BAK (accessed only via SAV/SWP)."
 }
 func (s *Standard) ISA() *vm.ISA                   { return s.isa }
+func (*Standard) StateFields() []cell.StateField {
+	return []cell.StateField{
+		{Name: "ACC", Kind: "word", Summary: "Accumulator."},
+		{Name: "BAK", Kind: "word", Summary: "Backup register, accessed only via SAV and SWP."},
+	}
+}
 func (*Standard) ConfigSchema() []cell.ConfigField { return nil }
 func (*Standard) ValidateConfig(cfg map[string]any) []cell.ConfigError {
 	return configErrors(nil, cfg)

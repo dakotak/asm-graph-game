@@ -278,12 +278,14 @@ func (s *Service) initialize(json.RawMessage) (any, *Error) {
 
 // CellTypeInfo describes an architecture for editors.
 type CellTypeInfo struct {
-	Type         string             `json:"type"`
-	Description  string             `json:"description"`
-	Programmable bool               `json:"programmable"`
-	Instructions []InstructionInfo  `json:"instructions,omitempty"`
-	Registers    []vm.RegisterDef   `json:"registers,omitempty"`
-	Config       []cell.ConfigField `json:"config,omitempty"`
+	Type         string            `json:"type"`
+	Description  string            `json:"description"`
+	Programmable bool              `json:"programmable"`
+	Instructions []InstructionInfo `json:"instructions,omitempty"`
+	Registers    []vm.RegisterDef  `json:"registers,omitempty"`
+	// State lists the fields CellSnapshot.state reports, in display order.
+	State  []cell.StateField  `json:"state,omitempty"`
+	Config []cell.ConfigField `json:"config,omitempty"`
 }
 
 // InstructionInfo describes one instruction for editors.
@@ -314,6 +316,13 @@ func DescribeTypes(reg *cell.Registry) []CellTypeInfo {
 					Operands: ops, Summary: d.Summary, Core: d.Opcode < vm.CoreOpcodeLimit,
 				})
 			}
+			info.State = []cell.StateField{}
+			for _, r := range info.Registers {
+				info.State = append(info.State, cell.StateField{Name: r.Name, Kind: "word", Summary: r.Summary})
+			}
+		}
+		if d, ok := a.(cell.StateDescriber); ok {
+			info.State = d.StateFields()
 		}
 		out = append(out, info)
 	}

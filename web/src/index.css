@@ -22,6 +22,8 @@
   --c-bad: #b3362c;
   --c-grid: #d8d5ce;
   --c-wire: #8d897f;
+  --c-in: #6a4fb0;
+  --c-out: #b0466f;
 }
 
 .dark {
@@ -41,6 +43,8 @@
   --c-bad: #e8695e;
   --c-grid: #1c2024;
   --c-wire: #59616a;
+  --c-in: #a98ee6;
+  --c-out: #e58aae;
 }
 
 @theme inline {
@@ -59,6 +63,8 @@
   --color-ok: var(--c-ok);
   --color-bad: var(--c-bad);
   --color-wire: var(--c-wire);
+  --color-in: var(--c-in);
+  --color-out: var(--c-out);
   --font-sans: 'IBM Plex Sans', ui-sans-serif, system-ui, sans-serif;
   --font-mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, monospace;
 }

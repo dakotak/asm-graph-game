@@ -150,7 +150,7 @@ export function CellInspector() {
           {ports.map((p) => (
             <tr key={p.port} className="border-t border-line">
               <td className="py-0.5 pr-2">{p.port}</td>
-              <td className={clsx('pr-2', !p.enabled && 'text-fg-faint')}>{p.enabled ? (p.peer ? `↔ ${p.peer}` : 'free') : 'disabled'}</td>
+              <td className="pr-2">{p.peer ? `↔ ${p.peer}` : 'free'}</td>
               <td className="text-warn">{waiting.has(p.port) ? 'waiting' : ''}</td>
             </tr>
           ))}

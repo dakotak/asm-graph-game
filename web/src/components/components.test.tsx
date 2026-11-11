@@ -174,7 +174,8 @@ describe('port and cell presentation', () => {
   it('classifies ports', () => {
     const conns = [{ from: { cell: 'input', port: 'P0' }, to: { cell: 'processor', port: 'P0' } }]
     const ports = portsOf('processor', new Set(['P0', 'P1', 'P2']), conns, snap, new Set())
-    expect(ports.map((p) => p.visual)).toEqual(['waiting', 'free', 'free', 'disabled'])
+    expect(ports.map((p) => p.visual)).toEqual(['waiting', 'free', 'free'])
+    expect(ports.map((p) => p.port)).toEqual(['P0', 'P1', 'P2'])
     const active = portsOf('processor', new Set(['P0']), conns, undefined, new Set(['input:P0--processor:P0']))
     expect(active[0].visual).toBe('active')
   })
