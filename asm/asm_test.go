@@ -11,7 +11,7 @@ import (
 )
 
 var std = cells.NewStandard().ISA()
-var stk = cells.NewStack().ISA()
+var stk = cells.NewStackProcessor().ISA()
 
 func compile(t *testing.T, src string, isa *vm.ISA, limit int) *asm.Result {
 	t.Helper()
@@ -131,7 +131,14 @@ func TestInvalidInstructions(t *testing.T) {
 
 func TestOperandValidation(t *testing.T) {
 	compileErr(t, "MOV 1, 2", std, 0, "cannot write to integer literal")
-	compileErr(t, "MOV P0, P9", std, 0, `"P9" is not a valid destination`)
+	compileErr(t, "MOV P0, P64", std, 0, `"P64" is not a valid destination`)
+	// Port operands are checked against the cell's port count.
+	if _, errs := asm.Compile("MOV P0, P9", std, asm.Options{Ports: 4}); len(errs) == 0 || !strings.Contains(errs.Error(), "port P9 does not exist on this cell: it has 4 port(s), P0-P3") {
+		t.Errorf("P9 on a 4-port cell: %v", errs)
+	}
+	if res, errs := asm.Compile("MOV P5, P7", std, asm.Options{Ports: 8}); len(errs) != 0 || res.Program.Size() != 3 {
+		t.Errorf("P5/P7 on an 8-port cell: %v", errs)
+	}
 	compileErr(t, "ADD BAK", std, 0, `"BAK" is not a valid source`)
 	compileErr(t, "JMP NOWHERE", std, 0, "undefined label")
 	compileErr(t, "A: NOP\nA: NOP", std, 0, "defined more than once")

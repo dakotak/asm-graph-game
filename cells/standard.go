@@ -29,11 +29,22 @@ func (*Standard) Type() string { return StandardType }
 func (*Standard) Description() string {
 	return "Accumulator processor with ACC and a backup register BAK (accessed only via SAV/SWP)."
 }
-func (s *Standard) ISA() *vm.ISA                   { return s.isa }
+func (s *Standard) ISA() *vm.ISA { return s.isa }
 func (*Standard) StateFields() []cell.StateField {
 	return []cell.StateField{
 		{Name: "ACC", Kind: "word", Summary: "Accumulator."},
 		{Name: "BAK", Kind: "word", Summary: "Backup register, accessed only via SAV and SWP."},
+	}
+}
+func (*Standard) Hardware() cell.HardwareSpec {
+	return cell.HardwareSpec{
+		Category:      cell.CategoryProcessor,
+		Ports:         cell.PortSpec{Min: 1, Max: 8, Default: 4},
+		ProgramMemory: &cell.MemorySpec{Min: 1, Max: 1024, Default: 32},
+		Cost: cell.CostModel{Base: 10, PerPort: 2, Properties: []cell.PropertyCost{
+			{Property: "program_memory", Cost: 1, Per: 8},
+		}},
+		Overrides: cell.Overrides{Cost: true, Defaults: true},
 	}
 }
 func (*Standard) ConfigSchema() []cell.ConfigField { return nil }

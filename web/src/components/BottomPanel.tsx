@@ -1,6 +1,6 @@
 import clsx from 'clsx'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { Diagnostic, OutputSnapshot, TestResult } from '../api/types'
+import type { Diagnostic, OutputSnapshot, ScoreDimension, TestResult } from '../api/types'
 import { controller } from '../services/controller'
 import { EVENT_CATEGORIES } from '../lib/eventLog'
 import { usePrefs } from '../state/prefs'
@@ -34,6 +34,57 @@ export function BottomPanel() {
 
 // --- tests ---------------------------------------------------------------
 
+const DIMENSIONS: { id: ScoreDimension; label: string; unit: string; hint: string; prefix?: string }[] = [
+  { id: 'cost', label: 'Hardware cost', unit: '', prefix: '¤', hint: 'Total cost of the hardware you built' },
+  { id: 'ticks', label: 'Ticks', unit: 'worst case', hint: 'The slowest test case' },
+  { id: 'bytes', label: 'Program size', unit: 'bytes', hint: 'Compiled bytecode across all programs' },
+]
+
+/**
+ * The three independent score dimensions: the last passing run and the
+ * personal best of each. They are never combined into one number.
+ */
+function ScoreBar() {
+  const bests = useWorkspace((s) => s.bests)
+  const last = useWorkspace((s) => s.lastScore)
+  const hasAny = !!last?.score || Object.keys(bests?.bests ?? {}).length > 0
+  if (!hasAny) {
+    return (
+      <p className="border-b border-line px-3 py-1.5 text-[11px] text-fg-faint" data-testid="score-bar">
+        Pass every test to get scored on hardware cost, ticks and program size (each tracked separately).
+      </p>
+    )
+  }
+  return (
+    <div className="grid grid-cols-3 gap-2 border-b border-line px-3 py-2" data-testid="score-bar">
+      {DIMENSIONS.map((d) => {
+        const best = bests?.bests[d.id]?.score
+        const cur = last?.score
+        const improved = last?.improved.includes(d.id)
+        return (
+          <div key={d.id} className={clsx('rounded-sm border px-2 py-1', improved ? 'border-ok/60 bg-ok/10' : 'border-line')} title={d.hint} data-testid={`score-${d.id}`}>
+            <div className="flex items-baseline justify-between">
+              <span className="label-caps">{d.label}</span>
+              {improved && <span className="text-[10px] text-ok">★ new best</span>}
+            </div>
+            <div className="font-mono text-[15px] text-fg">
+              {cur ? `${d.prefix ?? ''}${cur[d.id]}` : '—'} <span className="text-[10px] text-fg-muted">{d.unit}</span>
+            </div>
+            <div className="flex items-center justify-between font-mono text-[10px] text-fg-muted">
+              <span>best {best ? `${d.prefix ?? ''}${best[d.id]}` : '—'}</span>
+              {best && (
+                <button className="text-accent hover:underline" onClick={() => void controller.loadBest(d.id)} title={`Load the solution with your best ${d.label.toLowerCase()}`}>
+                  load
+                </button>
+              )}
+            </div>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 export function TestsPanel() {
   const tests = useWorkspace((s) => s.puzzleDoc?.puzzle.tests)
   const results = useSim((s) => s.results)
@@ -60,6 +111,7 @@ export function TestsPanel() {
           </span>
         )}
       </div>
+      <ScoreBar />
       <table className="w-full text-[12px]">
         <thead>
           <tr className="text-left">
@@ -303,7 +355,7 @@ const MAX_RENDERED = 400
 
 export function EventsPanel() {
   const log = useSim((s) => s.log)
-  const cells = useWorkspace((s) => s.puzzleDoc?.puzzle.cells)
+  const cells = useWorkspace((s) => s.cells)
   const cellFilter = usePrefs((s) => s.logFilterCell)
   const catFilter = usePrefs((s) => s.logFilterCategory)
   const ref = useRef<HTMLDivElement>(null)

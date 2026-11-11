@@ -39,6 +39,7 @@ import (
 	"asmgraph/engine"
 	"asmgraph/protocol"
 	"asmgraph/puzzle"
+	"asmgraph/scoring"
 	"asmgraph/solution"
 	"asmgraph/transport/jsonrpc"
 )
@@ -99,6 +100,9 @@ func New(cfg Config) (*Server, error) {
 	s.mux.HandleFunc("GET /api/puzzles/{id}/solutions", s.listSolutions)
 	s.mux.HandleFunc("GET /api/puzzles/{id}/solutions/{name}", s.getSolution)
 	s.mux.HandleFunc("PUT /api/puzzles/{id}/solutions/{name}", s.putSolution)
+	s.mux.HandleFunc("GET /api/puzzles/{id}/scores", s.getScores)
+	s.mux.HandleFunc("POST /api/puzzles/{id}/scores", s.submitScore)
+	s.mux.HandleFunc("GET /api/puzzles/{id}/scores/{dimension}/solution", s.getBestSolution)
 	s.mux.HandleFunc("POST /api/rpc", s.rpc)
 	s.mux.HandleFunc("GET /api/ws", s.ws)
 	s.mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
@@ -187,6 +191,10 @@ type PuzzleSummary struct {
 	Valid             bool      `json:"valid"`
 	Diagnostics       diag.List `json:"diagnostics,omitempty"`
 	Solutions         int       `json:"solutions"`
+	// Hardware is true when players build their own hardware.
+	Hardware bool `json:"hardware"`
+	// Bests are the personal bests per dimension (solved puzzles have them).
+	Bests map[scoring.Dimension]*scoring.Entry `json:"bests,omitempty"`
 }
 
 type loadedPuzzle struct {
@@ -239,6 +247,12 @@ func (s *Server) scanPuzzles() ([]loadedPuzzle, error) {
 			sort.Strings(sum.CellTypes)
 			if p.Metadata != nil {
 				sum.Difficulty = p.Metadata["difficulty"]
+			}
+			sum.Hardware = p.AllowsHardware()
+			if _, err := s.solutionDir(p.ID); err == nil {
+				if rec, err := s.store().Load(p.ID); err == nil && len(rec.Bests) > 0 {
+					sum.Bests = rec.Bests
+				}
 			}
 		}
 		if seen[sum.ID] {
@@ -445,6 +459,120 @@ func (s *Server) putSolution(w http.ResponseWriter, r *http.Request) {
 	}
 	s.log.Printf("saved solution %s/%s", id, name)
 	writeJSON(w, http.StatusOK, map[string]any{"name": name, "saved": true})
+}
+
+// --- scores ----------------------------------------------------------------
+
+func (s *Server) store() *scoring.Store { return &scoring.Store{Root: s.cfg.SolutionsDir} }
+
+func (s *Server) getScores(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if _, err := s.solutionDir(id); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	s.wmu.Lock()
+	rec, err := s.store().Load(id)
+	s.wmu.Unlock()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "cannot read personal bests")
+		return
+	}
+	writeJSON(w, http.StatusOK, rec)
+}
+
+// ScoreResponse is the result of submitting a solution for scoring.
+type ScoreResponse struct {
+	Passed   bool                `json:"passed"`
+	Summary  engine.Summary      `json:"summary"`
+	Score    *engine.Score       `json:"score,omitempty"`
+	Improved []scoring.Dimension `json:"improved"`
+	Record   *scoring.Record     `json:"record"`
+}
+
+// submitScore runs every test case of the posted solution on the server
+// and, if all pass, records its score. The client never reports a score:
+// the backend computes it, so personal bests cannot be forged by a stale
+// or modified frontend.
+func (s *Server) submitScore(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if _, err := s.solutionDir(id); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	lp, err := s.findPuzzle(id)
+	if err != nil || lp == nil || lp.puzzle == nil {
+		writeError(w, http.StatusNotFound, fmt.Sprintf("no puzzle %q", id))
+		return
+	}
+	var body struct {
+		YAML string `json:"yaml"`
+	}
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxSolutionBytes+4096))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "body must be {\"yaml\": string} under 1 MiB")
+		return
+	}
+	sol, l := solution.Parse([]byte(body.YAML), "solution.yaml")
+	if l.HasErrors() {
+		writeJSON(w, http.StatusUnprocessableEntity, APIError{Error: "solution YAML is invalid", Diagnostics: l})
+		return
+	}
+	bp, l := engine.Prepare(s.cfg.Registry, lp.puzzle, sol)
+	if l.HasErrors() {
+		writeJSON(w, http.StatusUnprocessableEntity, APIError{Error: "solution is invalid", Diagnostics: l})
+		return
+	}
+	res, err := engine.RunAll(bp, engine.Options{})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	out := ScoreResponse{Passed: res.Passed, Summary: res.Summary, Score: res.Score, Improved: []scoring.Dimension{}}
+	s.wmu.Lock()
+	defer s.wmu.Unlock()
+	st := s.store()
+	if res.Score != nil {
+		rec, improved, err := st.Submit(id, *res.Score, []byte(body.YAML))
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "cannot save personal best")
+			return
+		}
+		out.Record = rec
+		if improved != nil {
+			out.Improved = improved
+			s.log.Printf("new personal best for %s: %v", id, improved)
+		}
+	} else if out.Record, err = st.Load(id); err != nil {
+		writeError(w, http.StatusInternalServerError, "cannot read personal bests")
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) getBestSolution(w http.ResponseWriter, r *http.Request) {
+	id, dim := r.PathValue("id"), scoring.Dimension(r.PathValue("dimension"))
+	if _, err := s.solutionDir(id); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	valid := false
+	for _, d := range scoring.Dimensions {
+		valid = valid || d == dim
+	}
+	if !valid {
+		writeError(w, http.StatusBadRequest, "dimension must be cost, ticks, or bytes")
+		return
+	}
+	s.wmu.Lock()
+	data, err := s.store().Solution(id, dim)
+	s.wmu.Unlock()
+	if err != nil {
+		writeError(w, http.StatusNotFound, "no personal best for that dimension")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"name": "best-" + string(dim), "yaml": string(data)})
 }
 
 // --- stateless RPC -------------------------------------------------------

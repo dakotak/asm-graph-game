@@ -78,7 +78,9 @@ Go tests:
 | `assemble` method | protocol | Compiles one program without touching the session, for the exact live byte count and errors while typing |
 | `runTest` method | protocol, `Session.RunTest` | Runs a single test on a fresh machine without disturbing the debugger |
 | `setBreakpoints` method | protocol, `Session.SetBreakpoints`, `Machine.BreakpointHit` | Real breakpoints. They decide only *when* a run pauses, never what it computes. |
-| `listCellTypes` extras | protocol | `operandKinds`, `ports`, and `syntax`, so the editor needs no hard-coded rules |
+| `listCellTypes` extras | protocol | `operandKinds`, `ports`, `syntax`, `state`, and `hardware`, so the editor needs no hard-coded rules |
+| Hardware catalog and report | `loadPuzzle`, `loadSolution` | Effective limits for the palette; per-node costs, budget, and violations for the design being edited |
+| Scores | `POST /api/puzzles/{id}/scores`, `scoring` package | The server re-runs a passing solution and keeps per-dimension personal bests |
 
 ## HTTP API
 
@@ -88,11 +90,14 @@ with an appropriate status code.
 | Method and path | Result |
 |---|---|
 | `GET /api/health` | `{ok, name, version, protocolVersion}` |
-| `GET /api/puzzles` | `{puzzles: [PuzzleSummary]}`: id, name, description, file, cellTypes, cells, programmableCells, tests, difficulty (`metadata.difficulty`), valid, diagnostics, solutions |
+| `GET /api/puzzles` | `{puzzles: [PuzzleSummary]}`: id, name, description, file, cellTypes, cells, programmableCells, tests, difficulty (`metadata.difficulty`), valid, diagnostics, solutions, hardware (players build hardware), bests |
 | `GET /api/puzzles/{id}` | `{summary, yaml, puzzle}`. The single YAML file, with every test case. |
 | `GET /api/puzzles/{id}/solutions` | `{solutions: [{name, modified, size}]}` |
 | `GET /api/puzzles/{id}/solutions/{name}` | `{name, yaml}` |
 | `PUT /api/puzzles/{id}/solutions/{name}` | Body `{yaml}`, at most 1 MiB. The YAML must parse as a solution for that puzzle. Work-in-progress solutions that don't compile are allowed. Writes are atomic (temp file and rename). |
+| `GET /api/puzzles/{id}/scores` | Personal bests: `{puzzle, bests: {cost?, ticks?, bytes?: {score, file, achieved}}}` |
+| `POST /api/puzzles/{id}/scores` | Body `{yaml}`. The server validates the solution, runs **every** test itself, and, if all pass, records the score: `{passed, summary, score?, improved: [dimension], record}`. Invalid solutions get 422 with diagnostics. The client never sends a score. |
+| `GET /api/puzzles/{id}/scores/{cost\|ticks\|bytes}/solution` | `{name, yaml}` of the solution behind that personal best |
 | `POST /api/rpc` | Stateless JSON-RPC: `initialize`, `listCellTypes`, `validatePuzzle`, `assemble` |
 | `GET /api/ws` | WebSocket. Full JSON-RPC session with event notifications. |
 
@@ -145,9 +150,11 @@ web/src/
   state/sim.ts          execution state: connection, machine view, edge activity, event log, results
   state/prefs.ts        persisted preferences, drafts, solved puzzles
   state/ui.ts           dialogs, panel tabs, focus and reveal requests
-  lib/                  pure logic: solution YAML, connection checks, event reducer, log ring buffer, layout, statuses
+  lib/                  pure logic: solution YAML, connection checks, hardware resolution (cells, defaults, cost mirror,
+                        port placement), event reducer, log ring buffer, layout, statuses
   editor/               Monaco entry, themes, catalog-driven language support, pure editor helpers
-  components/           toolbar, sidebar, graph, editor pane, inspector, bottom panel, dialogs
+  components/           toolbar, sidebar, hardware palette and node editor, graph, editor pane, inspector,
+                        bottom panel (tests with scores), dialogs
   commands.ts           single registry for toolbar, shortcuts, command palette and help
 ```
 
@@ -199,26 +206,58 @@ same at every speed.
 
 ### Graph editor
 
-- Nodes are the puzzle's cells. They cannot be deleted. The player can
-  move them and select them.
-- Ports are React Flow handles in loose connection mode: P0 left, P1
-  right, P2 top, P3 bottom. Each port shows one of five states:
+- Nodes are the puzzle's fixed cells plus the player's hardware. Fixed
+  cells cannot be deleted; player nodes are removed with Delete (or the
+  Remove button), together with their wires and program. Input and output
+  cells have their own look (accent bar and `INPUT ▶` / `◀ OUTPUT` tag);
+  passive peripherals have a dashed outline and show their stored data;
+  player nodes show their cost (`¤22`) and any backend violations.
+- Ports are React Flow handles in loose connection mode. Only the ports
+  a cell actually has (and that are enabled) are drawn: P0 left, P1
+  right, P2 top, P3 bottom, then around again, spread along each side.
+  Labels sit outside the node and include a peripheral port's function
+  (`P1 POP`). Each port shows one of four states:
 
 | Port state | Drawn as |
 |---|---|
-| Disabled by the puzzle | dashed, with `×` |
 | Free | hollow |
 | Connected | filled |
 | The cell is waiting on it (from the backend's `request` and `blocked`) | amber |
 | Value transferred this tick | accent |
 
 - Invalid connections are prevented by `isValidConnection` (`lib/connections.ts`):
-  - disabled ports
+  - ports the cell does not have, or that are disabled
   - ports already in use
   - self-connections
   - virtual ports
+  - two ports that can never exchange data (for example an input stream
+    into a stack's `POP` port: both only send)
 
   The backend validates the topology again on every load.
+
+### Hardware design
+
+For puzzles with a `hardware` section (see [hardware.md](hardware.md)):
+
+- The sidebar's **Hardware** palette lists the types the puzzle allows,
+  with their default cost and how many are placed, plus budget meters for
+  cost and node count. Required types are marked. **+ Add** places a node
+  with its effective defaults below the current design.
+- Selecting a node opens its **configuration**: port count, program memory
+  (processors), a function per port (peripherals), and configuration
+  fields, each limited to the effective range, with the cost breakdown.
+  Processors show it in the inspector next to their code; passive
+  peripherals have no code, so the editor pane shows the configuration
+  instead.
+- Lowering a port count removes the wires that no longer fit, and says
+  which.
+- About 300 ms after each hardware edit the design is sent to the backend
+  (`loadSolution`). Its report supplies the costs, and its diagnostics
+  supply violations, shown on the palette and on the offending node.
+- After **Run all tests** passes, the solution is posted to
+  `/api/puzzles/{id}/scores`. The Tests panel shows the three score
+  dimensions, the personal best of each, "new best" markers, and a
+  **load** link to open the solution behind a best.
 - Select a wire and press Delete or Backspace to remove it, or use the
   Disconnect button. Other controls: Auto layout (dagre), Fit, Snap to
   grid, and Animate.
@@ -323,9 +362,10 @@ npm run e2e
 npm run typecheck
 ```
 
-- **Unit tests** (Vitest, React Testing Library, jsdom; 47 tests):
-  - solution YAML round trips and rejections
-  - connection rules
+- **Unit tests** (Vitest, React Testing Library, jsdom; 53 tests):
+  - solution YAML round trips (including player hardware) and rejections
+  - connection rules, including port counts and data directions
+  - hardware resolution: defaults, the cost mirror, port placement
   - the event reducer, including gap detection
   - the ring buffer, layout, and editor context parsing
   - the RPC client: correlation, errors, disconnect and reconnect
@@ -333,7 +373,8 @@ npm run typecheck
     loading, compile diagnostics that keep the source, step sequencing
     and serialization, batched events and resync, invalidation on edit,
     maximum-speed sampling, saving, recovery after disconnection,
-    import/export
+    import/export, and designing hardware (add, configure, remove,
+    backend violations, score submission)
   - component rendering: the test panel, diagnostics, toolbar control
     states, palette, event filtering, and port and cell presentation
 - **End-to-end** (Playwright, against the **real Go server** serving the
@@ -344,6 +385,9 @@ npm run typecheck
   - step, run to completion, and reset (tick values match the CLI)
   - invalid connections are rejected and deleting a wire works
   - export and re-import
+  - design hardware for `stack-reverse`: add a processor and a passive
+    stack, configure the stack, a refused POP-to-input wire, wire it, type
+    the program, pass 3/3, and get scored by the server
 - **Go:** `go test ./transport/web` covers:
   - the library API and path-traversal rejection
   - the host check
@@ -351,6 +395,7 @@ npm run typecheck
   - WebSocket sessions
   - breakpoints
   - backpressure: dropped events with a visible `seq` gap
+  - scores and personal bests, and hardware over WebSocket
 
 ## Supporting new cell types
 
@@ -359,7 +404,11 @@ the type in Go (see [plugins.md](plugins.md)), and the IDE picks up:
 
 - **Editor:** mnemonics, opcodes, operand slots, summaries, and registers
   from `listCellTypes`. These drive syntax highlighting, completion, and
-  hover.
+  hover. Port completion offers the cell's own ports (with what each is
+  connected to).
+- **Hardware:** the type's `HardwareSpec` drives the palette, the node
+  configuration editor (port range, memory range, port functions, config
+  fields), and the cost display.
 - **Debug state:** the plugin's `Inspect()` map is shown generically.
   Number values render as registers. Arrays render as lists with the top
   element marked, which is how a stack shows up.

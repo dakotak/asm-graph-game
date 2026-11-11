@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import type { CellSnapshot, Puzzle, SimEvent, Snapshot } from '../api/types'
 import { checkConnection, connectionId, findConnection } from './connections'
+import { catalog } from '../test/fakeBackend'
+import { defaultFunctions, estimateCost, nextNodeId, portDirection, portPlacement, resolveCells } from './hardware'
 import { formatEvent, RingBuffer } from './eventLog'
 import { autoLayout } from './layout'
 import { applyEvents, emptyView, viewFromSnapshot } from './simReducer'
@@ -27,7 +29,7 @@ describe('solution serialization', () => {
     s.layout = { input: { x: 0.4, y: 10 }, processor: { x: 300, y: 10 } }
     s.extraMetadata = { notes: 'keep me' }
     const yaml = serializeSolution(s)
-    expect(yaml).toContain('schema_version: 1')
+    expect(yaml).toContain('schema_version: 2')
     expect(yaml).toContain('processor: |\n') // block literal, as hand-written files use
     expect(yaml).not.toContain('cells:')
     const back = parseSolution(yaml)
@@ -64,7 +66,7 @@ metadata:
 
   it('rejects files that redefine puzzle hardware or are malformed', () => {
     expect(() => parseSolution('schema_version: 1\npuzzle: x\ncells: []\n')).toThrow(/cannot define "cells"/)
-    expect(() => parseSolution('schema_version: 2\npuzzle: x\n')).toThrow(SolutionParseError)
+    expect(() => parseSolution('schema_version: 3\npuzzle: x\n')).toThrow(SolutionParseError)
     expect(() => parseSolution('puzzle: [unclosed')).toThrow(/Not valid YAML/)
     expect(() => parseSolution('schema_version: 1\npuzzle: x\nconnections: [{from: 1}]\n')).toThrow(/connections\[0\]/)
     expect(() => parseSolution('- just a list')).toThrow(/mapping/)
@@ -79,9 +81,10 @@ metadata:
 })
 
 describe('connection checks', () => {
+  const cells = resolveCells(puzzle, null, catalog, null, null)
   const conns = [{ from: { cell: 'input', port: 'P0' }, to: { cell: 'processor', port: 'P0' } }]
   it('accepts free, enabled ports', () => {
-    expect(checkConnection(puzzle.cells, conns, { cell: 'processor', port: 'P1' }, { cell: 'output', port: 'P0' })).toEqual({ ok: true })
+    expect(checkConnection(cells, conns, { cell: 'processor', port: 'P1' }, { cell: 'output', port: 'P0' })).toEqual({ ok: true })
   })
   it.each([
     [{ cell: 'processor', port: 'P1' }, { cell: 'output', port: 'P2' }, /disabled/],
@@ -90,7 +93,7 @@ describe('connection checks', () => {
     [{ cell: 'processor', port: 'ANY' }, { cell: 'output', port: 'P0' }, /not a physical port/],
     [{ cell: 'ghost', port: 'P0' }, { cell: 'output', port: 'P0' }, /Unknown cell/],
   ])('rejects %o -> %o', (a, b, re) => {
-    const r = checkConnection(puzzle.cells, conns, a, b)
+    const r = checkConnection(cells, conns, a, b)
     expect(r.ok).toBe(false)
     if (!r.ok) expect(r.reason).toMatch(re)
   })
@@ -102,7 +105,7 @@ describe('connection checks', () => {
 })
 
 function cell(id: string, extra: Partial<CellSnapshot> = {}): CellSnapshot {
-  return { id, type: 'standard', programmable: true, pc: 0, address: 0, stage: 'ready', blocked: false, ports: [], state: { ACC: 0 }, instructionsCompleted: 0, ...extra }
+  return { id, type: 'standard', category: 'processor', programmable: true, pc: 0, address: 0, stage: 'ready', blocked: false, ports: [], state: { ACC: 0 }, instructionsCompleted: 0, ...extra }
 }
 
 const snapshot: Snapshot = {
@@ -115,7 +118,7 @@ const snapshot: Snapshot = {
   connections: [],
   inputs: [{ cell: 'input', stream: 'xs', position: 0, length: 3 }],
   outputs: [{ cell: 'out', stream: 'ys', state: 'pending', expected: [2], received: [] }],
-  metrics: { ticks: 0, instructions: 0, transfers: 0, programBytes: {}, totalProgramBytes: 0, cellsSupplied: 2, cellsUsed: 0, connections: 0 },
+  metrics: { ticks: 0, instructions: 0, transfers: 0, programBytes: {}, totalProgramBytes: 0, cellsSupplied: 2, cellsUsed: 0, connections: 0, hardwareCost: 0 },
 }
 
 describe('event reducer', () => {
@@ -224,5 +227,93 @@ describe('editor context', () => {
   })
   it('collects defined labels', () => {
     expect(definedLabels('A: B: NOP\n  LOOP: MOV P0, ACC # X: not a label\nJMP A', c).sort()).toEqual(['A', 'B', 'LOOP'])
+  })
+})
+
+describe('hardware', () => {
+  const v2: Puzzle = {
+    schema_version: 2,
+    id: 'hw',
+    cells: [
+      { id: 'in', type: 'input', config: { stream: 'xs' } },
+      { id: 'out', type: 'output', config: { stream: 'ys' } },
+    ],
+    hardware: { max_cost: 50 },
+    tests: [{ name: 't', inputs: { xs: [1] }, outputs: { ys: [1] } }],
+  }
+  const stackSpec = catalog.types.find((t) => t.type === 'stack')!.hardware
+  const eff = {
+    type: 'stack',
+    spec: stackSpec,
+    ports: { min: 2, max: 6, default: 4 },
+    functions: ['PUSH', 'POP', 'SIZE'],
+    functionMax: { PUSH: 1 },
+    cost: stackSpec.cost,
+    min: 0,
+    max: 0,
+  }
+
+  it('resolves fixed cells and player nodes with their defaults', () => {
+    const sol = {
+      ...emptySolution(v2, () => false),
+      hardware: [
+        { id: 'cpu1', type: 'standard', port_count: 6 },
+        { id: 'st', type: 'stack', port_count: 5 },
+      ],
+    }
+    const cells = resolveCells(v2, sol, catalog, [eff], null)
+    expect(cells.map((c) => [c.id, c.player, c.portCount])).toEqual([
+      ['in', false, 1],
+      ['out', false, 1],
+      ['cpu1', true, 6],
+      ['st', true, 5],
+    ])
+    expect(cells[2].programMemory).toBe(32)
+    // The puzzle forbids PEEK and allows one PUSH, like the Go default.
+    expect(cells[3].portFunctions).toEqual(['PUSH', 'POP', 'POP', 'SIZE', 'POP'])
+    // v1 cells always have four ports.
+    expect(resolveCells(puzzle, null, catalog, null, null)[0].portCount).toBe(4)
+  })
+
+  it('mirrors the backend cost model and default assignment', () => {
+    expect(estimateCost({ base: 10, perPort: 2, properties: [{ property: 'program_memory', cost: 1, per: 8 }] }, { ports: 6, programMemory: 9 })).toBe(10 + 12 + 2)
+    expect(defaultFunctions(stackSpec, undefined, 6)).toEqual(['PUSH', 'POP', 'PEEK', 'SIZE', 'PUSH', 'POP'])
+    expect(nextNodeId('standard', new Set(['cpu1']))).toBe('cpu2')
+  })
+
+  it('spreads ports around the node', () => {
+    const p = portPlacement(6)
+    expect(p.map((x) => x.side)).toEqual(['left', 'right', 'top', 'bottom', 'left', 'right'])
+    expect(p[0].offset).toBeCloseTo(100 / 3)
+    expect(p[4].offset).toBeCloseTo(200 / 3)
+    expect(p[2].offset).toBe(50)
+  })
+
+  it('refuses connections between ports that can never exchange data', () => {
+    const sol = { ...emptySolution(v2, () => false), hardware: [{ id: 'st', type: 'stack', port_count: 4 }] }
+    const cells = resolveCells(v2, sol, catalog, [eff], null)
+    const roles: Record<string, 'input' | 'output'> = { in: 'input', out: 'output' }
+    const dir = (c: (typeof cells)[number], p: string) => portDirection(c, p, catalog, roles[c.id])
+    // input -> PUSH is fine; input -> POP (both only send) is not.
+    expect(checkConnection(cells, [], { cell: 'in', port: 'P0' }, { cell: 'st', port: 'P0' }, dir).ok).toBe(true)
+    const r = checkConnection(cells, [], { cell: 'in', port: 'P0' }, { cell: 'st', port: 'P1' }, dir)
+    expect(r.ok).toBe(false)
+    if (!r.ok) expect(r.reason).toMatch(/only send values/)
+    const missing = checkConnection(cells, [], { cell: 'in', port: 'P0' }, { cell: 'st', port: 'P7' }, dir)
+    expect(!missing.ok && missing.reason).toMatch(/has no port P7/)
+  })
+
+  it('round-trips player hardware through YAML', () => {
+    const sol = {
+      ...emptySolution(v2, () => false),
+      hardware: [{ id: 'st', type: 'stack', port_count: 2, port_functions: ['PUSH', 'POP'], config: { capacity: 9 } }],
+    }
+    const yaml = serializeSolution(sol)
+    expect(yaml).toContain('port_functions:')
+    expect(parseSolution(yaml).hardware).toEqual(sol.hardware)
+    // A fixed-topology puzzle drops player hardware (with a warning).
+    const { solution, warnings } = adaptToPuzzle(parseSolution(yaml.replace('puzzle: hw', 'puzzle: double-input')), puzzle, (t) => t === 'standard')
+    expect(solution.hardware).toEqual([])
+    expect(warnings[0]).toMatch(/fixed topology/)
   })
 })

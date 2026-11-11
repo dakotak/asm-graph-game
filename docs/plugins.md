@@ -28,7 +28,23 @@ Inspect() map[string]any          // JSON-friendly debug view
 AppendState(b []byte) []byte      // canonical encoding of ALL mutable state
 ```
 
-A non-programmable type's instances implement `cell.Device`:
+A **passive peripheral**'s instances implement `cell.Peripheral`. It
+serves several ports at once without any instruction processor:
+
+```go
+Offers(dst []cell.Offer) []cell.Offer   // this tick: at most one {Port, Op, Value} per port
+Commit(port vm.Port, op cell.RequestOp, v vm.Word)  // the one offer the engine matched
+```
+
+`Offers` must depend only on the instance's own state. The engine matches
+offers against neighbours' requests under the normal arbitration (lowest
+port first) and calls `Commit` for at most one of them per tick. An
+operation that cannot happen now (push to a full stack, pop from an empty
+one) is simply not offered, so blocked operations never partially change
+state. See `cells/stack.go`.
+
+A simpler non-programmable type can implement `cell.Device`, which makes
+one request per tick like a processor does (the I/O cells do this):
 
 ```go
 Request() cell.Request            // this tick's intent: none, read, or write (port incl. ANY/LAST)
@@ -36,9 +52,64 @@ CommitRead(port vm.Port, v vm.Word)
 CommitWrite(port vm.Port)
 ```
 
+Instances may also implement `cell.PortDescriber`
+(`PortFunction(p) string`), so snapshots, the graph, and block reasons
+can name a port's function (`P1 (POP)`).
+
+`cell.Spec` gives `New` the instance's configuration: `PortCount`, the
+enabled-port mask `Ports`, `PortFunctions` (peripherals), `ProgramMemory`
+(processors), and `Config`.
+
 The optional interfaces `cell.StreamDeclarer` (on the architecture) and
 `cell.Source` / `cell.Sink` (on instances) connect a type to test-case
 streams and output validation.
+
+### Hardware description
+
+An architecture describes itself as hardware by implementing
+`cell.Hardware`:
+
+```go
+func (Stack) Hardware() cell.HardwareSpec {
+    return cell.HardwareSpec{
+        Category:      cell.CategoryPeripheral,          // processor | peripheral | io
+        Ports:         cell.PortSpec{Min: 2, Max: 8, Default: 4},
+        PortFunctions: &cell.PortFunctions{
+            Functions: []cell.PortFunction{
+                {Name: "PUSH", Direction: cell.DirectionIn, Min: 1, Summary: "..."},
+                {Name: "POP", Direction: cell.DirectionOut, Min: 1, Summary: "..."},
+                // ...
+            },
+            Configurable: true,                          // players assign functions per port
+            Default:      []string{"PUSH", "POP", "PEEK", "SIZE"},
+            Rule:         "At least one PUSH port and one POP port.",
+        },
+        Cost: cell.CostModel{Base: 5, PerPort: 1, Properties: []cell.PropertyCost{
+            {Property: "capacity", Cost: 1, Per: 4},     // 1 per 4 slots, rounded up
+        }},
+        Overrides: cell.Overrides{Cost: true, Defaults: true}, // what puzzles may change
+    }
+}
+```
+
+Processors also declare `ProgramMemory: &cell.MemorySpec{Min, Max, Default}`.
+I/O types set `PuzzleOnly: true`. The registry rejects impossible
+descriptions (empty or inverted ranges, more than `vm.MaxPorts` ports,
+negative costs, undeclared default functions).
+
+Architectures without `Hardware` get a default description: four fixed
+ports, cost 10 + 2/port (processors, with 1–65535 bytes of memory) or
+5 + 1/port (other devices), and puzzle-only if they bind test streams.
+The multiplier example plugin relies on this.
+
+`cell.ValidateHardware` checks a configuration against these limits; the
+engine then applies the puzzle's narrower rules. For rules the spec cannot
+express, implement `cell.HardwareValidator`
+(`ValidateHardware(cell.HardwareConfig) []cell.ConfigError`). Plugins stay
+responsible for their own configuration; the engine enforces the common
+constraints. See [hardware.md](hardware.md).
+
+### State description
 
 `cell.StateDescriber` (on the architecture) declares the fields `Inspect`
 reports, in display order, with a kind (`word` or `list`) and a summary.
@@ -71,7 +142,11 @@ What the engine guarantees, and what plugins must do:
   operands and at most one destination.
 - Registers: `NIL` (0x00) is always present and handled by the engine.
   `ACC` must use code 0x01. Other registers use codes 0x02–0x0F, and
-  their names must not clash with port names.
+  their names must not clash with port names (`P0`–`P63`, `ANY`, `LAST`).
+- **Ports belong to the engine too.** A peripheral offers operations on
+  its own ports; the engine decides which one happens. Offer only ports
+  below `Spec.PortCount`, at most one operation per port; anything else is
+  a runtime error.
 
 ## Example
 
@@ -115,8 +190,12 @@ reg := cells.NewRegistry()  // built-ins
 err := plugins.LoadAll(reg, plugins.Static{ID: "multiplier", Register: multiplier.Register})
 ```
 
-`cell.Registry.Register` rejects duplicate type identifiers and invalid
-names.
+`cell.Registry.Register` rejects duplicate type identifiers, invalid
+names, and invalid hardware descriptions.
+
+The plugin contract version is `cell.APIVersion` = 2 (version 2 added
+variable port counts in `cell.Spec`, `cell.Peripheral`, and the hardware
+description). Native plugins must be rebuilt against it.
 
 ### Native Go plugins
 

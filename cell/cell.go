@@ -12,15 +12,33 @@ import "asmgraph/vm"
 
 // APIVersion is the version of this plugin contract. Native plugins export
 // a CellAPIVersion symbol that must equal it.
-const APIVersion = 1
+const APIVersion = 2
 
-// Spec is the puzzle-defined configuration of one cell instance.
+// Spec is the configuration of one cell instance, whether the puzzle
+// supplies it or the player instantiated it.
 type Spec struct {
 	ID            string
 	Type          string
-	ProgramMemory int               // program-memory budget in bytes (programmable cells)
-	Ports         [vm.NumPorts]bool // enabled physical ports
-	Config        map[string]any    // validated plugin configuration
+	ProgramMemory int // program-memory budget in bytes (programmable cells)
+	// PortCount is the number of physical ports, P0..P(PortCount-1).
+	PortCount int
+	// Ports marks which of those ports are enabled (len PortCount). Fixed
+	// schema-v1 cells may disable some; player hardware enables all.
+	Ports []bool
+	// PortFunctions is the function of each port for peripherals that
+	// declare port functions (len PortCount), otherwise nil.
+	PortFunctions []string
+	Config        map[string]any // validated plugin configuration
+}
+
+// Enabled reports whether physical port p exists and is enabled.
+func (s *Spec) Enabled(p vm.Port) bool {
+	return p.Physical() && p.Index() < len(s.Ports) && s.Ports[p.Index()]
+}
+
+// Hardware returns the hardware configuration described by the spec.
+func (s *Spec) Hardware() HardwareConfig {
+	return HardwareConfig{Ports: s.PortCount, PortFunctions: s.PortFunctions, ProgramMemory: s.ProgramMemory, Config: s.Config}
 }
 
 // Env is the per-test-case environment visible to instances. Only stream
@@ -121,6 +139,16 @@ const (
 	RequestWrite
 )
 
+func (o RequestOp) String() string {
+	switch o {
+	case RequestRead:
+		return "read"
+	case RequestWrite:
+		return "write"
+	}
+	return "none"
+}
+
 // Request is a device's communication intent for the current tick.
 type Request struct {
 	Op    RequestOp
@@ -128,15 +156,46 @@ type Request struct {
 	Value vm.Word // for writes
 }
 
-// Device is a non-programmable instance that communicates through ports
-// (input and output cells, or plugin peripherals). Each tick the engine
-// calls Request; if the request is matched, exactly one of CommitRead or
-// CommitWrite is called with the physical port used.
+// Device is a non-programmable instance that makes a single request per
+// tick, like a processor does (input and output cells). Each tick the
+// engine calls Request; if the request is matched, exactly one of
+// CommitRead or CommitWrite is called with the physical port used.
+// Peripherals that serve several ports at once implement Peripheral
+// instead.
 type Device interface {
 	Instance
 	Request() Request
 	CommitRead(port vm.Port, v vm.Word)
 	CommitWrite(port vm.Port)
+}
+
+// Offer is one port operation a peripheral is ready to perform this tick.
+// For RequestWrite, Value is what a neighbour reading that port receives.
+type Offer struct {
+	Port  vm.Port // a physical port
+	Op    RequestOp
+	Value vm.Word
+}
+
+// Peripheral is passive hardware that serves its ports concurrently (for
+// example a stack with PUSH and POP ports). Each tick the engine calls
+// Offers, which must depend only on the instance's own state; an offer per
+// port at most. The engine matches offers against neighbours' requests
+// under the same rules as every other cell, completing at most one
+// transfer per cell per tick (lowest-numbered port first), and then calls
+// Commit exactly once for the matched offer. An unmatched offer has no
+// effect, so a blocked operation never partially changes state.
+type Peripheral interface {
+	Instance
+	Offers(dst []Offer) []Offer
+	// Commit applies the matched offer. For reads, v is the received value.
+	Commit(port vm.Port, op RequestOp, v vm.Word)
+}
+
+// PortDescriber is optionally implemented by instances to label their
+// ports (for example "PUSH") in snapshots and block reasons.
+type PortDescriber interface {
+	PortFunction(p vm.Port) string
 }
 
 // Source is implemented by instances that emit a test-case input stream.

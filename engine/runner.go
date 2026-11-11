@@ -46,7 +46,11 @@ func RunAll(bp *Blueprint, opts Options) (*SuiteResult, error) {
 		s.TotalProgramBytes = tr.Metrics.TotalProgramBytes
 		s.CellsSupplied = tr.Metrics.CellsSupplied
 		s.Connections = tr.Metrics.Connections
+		s.HardwareCost = tr.Metrics.HardwareCost
 	}
 	res.Summary.CellsUsed = len(used)
+	if res.Passed {
+		res.Score = &Score{Cost: bp.Hardware.TotalCost, Ticks: res.Summary.MaxTicks, Bytes: bp.TotalProgramBytes()}
+	}
 	return res, nil
 }

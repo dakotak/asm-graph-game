@@ -1,7 +1,7 @@
-// Package solution loads and validates player solutions: connections and
-// assembly programs for a puzzle. Solutions are separate files and cannot
-// redefine anything the puzzle author owns (cells, types, memory limits,
-// ports, or tests).
+// Package solution loads and validates player solutions: the hardware the
+// player instantiated (schema v2), connections, and assembly programs.
+// Solutions are separate files and cannot redefine anything the puzzle
+// author owns (fixed cells, their memory limits and ports, or tests).
 package solution
 
 import (
@@ -19,14 +19,20 @@ import (
 	"asmgraph/puzzle"
 )
 
-// SchemaVersion is the solution file schema version this build reads.
-const SchemaVersion = 1
+// SchemaVersion is the newest solution file schema version. Version 2
+// added the `hardware` list; version-1 files are still read.
+const SchemaVersion = 2
+
+// MinSchemaVersion is the oldest schema version still read.
+const MinSchemaVersion = 1
 
 // Solution is a player's answer to one puzzle.
 type Solution struct {
-	SchemaVersion int                `yaml:"schema_version" json:"schema_version"`
-	Puzzle        string             `yaml:"puzzle" json:"puzzle"`
-	Connections   []graph.Connection `yaml:"connections" json:"connections"`
+	SchemaVersion int    `yaml:"schema_version" json:"schema_version"`
+	Puzzle        string `yaml:"puzzle" json:"puzzle"`
+	// Hardware lists the nodes the player instantiated (schema v2).
+	Hardware    []Node             `yaml:"hardware,omitempty" json:"hardware,omitempty"`
+	Connections []graph.Connection `yaml:"connections" json:"connections"`
 	// Programs maps cell id to assembly source.
 	Programs map[string]string `yaml:"programs" json:"programs"`
 	// Metadata is free-form frontend presentation data (cell positions,
@@ -35,6 +41,21 @@ type Solution struct {
 
 	file string
 	root *yaml.Node
+}
+
+// Node is one player-instantiated hardware node.
+type Node struct {
+	ID   string `yaml:"id" json:"id"`
+	Type string `yaml:"type" json:"type"`
+	// PortCount defaults to the effective default for the type.
+	PortCount int `yaml:"port_count,omitempty" json:"port_count,omitempty"`
+	// ProgramMemory (processors) defaults to the effective default.
+	ProgramMemory int `yaml:"program_memory,omitempty" json:"program_memory,omitempty"`
+	// PortFunctions (peripherals) defaults to the type's default assignment.
+	PortFunctions []string       `yaml:"port_functions,omitempty" json:"port_functions,omitempty"`
+	Config        map[string]any `yaml:"config,omitempty" json:"config,omitempty"`
+	// Metadata is free-form presentation data; the engine never reads it.
+	Metadata map[string]any `yaml:"metadata,omitempty" json:"metadata,omitempty"`
 }
 
 // File returns the path the solution was loaded from, if any.
@@ -85,32 +106,98 @@ func yamlErrors(err error, file string) diag.List {
 // compile programs (see engine.Prepare).
 func (s *Solution) Validate(p *puzzle.Puzzle, reg *cell.Registry) diag.List {
 	var l diag.List
-	if s.SchemaVersion != SchemaVersion {
-		l.Errorf("solution.schema_version", "schema_version", "unsupported schema_version %d (this build reads version %d)", s.SchemaVersion, SchemaVersion)
+	if s.SchemaVersion < MinSchemaVersion || s.SchemaVersion > SchemaVersion {
+		l.Errorf("solution.schema_version", "schema_version", "unsupported schema_version %d (this build reads versions %d-%d)", s.SchemaVersion, MinSchemaVersion, SchemaVersion)
+	}
+	if s.SchemaVersion < 2 && s.Hardware != nil {
+		l.Errorf("solution.schema_version", "hardware", "the hardware list needs schema_version: 2")
 	}
 	if s.Puzzle != p.ID {
 		l.Errorf("solution.puzzle", "puzzle", "solution is for puzzle %q but the loaded puzzle is %q", s.Puzzle, p.ID)
 	}
+	l = append(l, s.validateHardware(p, reg)...)
 	for _, id := range s.ProgramCells() {
-		i, ok := p.CellIndex(id)
+		typ, ok := s.cellType(p, id)
 		if !ok {
-			l.Errorf("solution.program", "programs."+id, "puzzle has no cell %q", id)
+			l.Errorf("solution.program", "programs."+id, "there is no cell %q", id)
 			continue
 		}
-		if arch, ok := reg.Lookup(p.Cells[i].Type); ok && arch.ISA() == nil {
-			l.Errorf("solution.program", "programs."+id, "cell %q (type %s) is not programmable", id, p.Cells[i].Type)
+		if arch, ok := reg.Lookup(typ); ok && arch.ISA() == nil {
+			l.Errorf("solution.program", "programs."+id, "cell %q (type %s) is not programmable", id, typ)
 		}
 	}
-	_, tl := s.Topology(p)
+	_, tl := s.Topology(p, reg)
 	l = append(l, tl...)
 	return s.Annotate(l)
 }
 
-// Topology builds the connection graph for the puzzle's cells.
-func (s *Solution) Topology(p *puzzle.Puzzle) (*graph.Topology, diag.List) {
-	cells := make([]graph.CellPorts, len(p.Cells))
+func (s *Solution) cellType(p *puzzle.Puzzle, id string) (string, bool) {
+	if i, ok := p.CellIndex(id); ok {
+		return p.Cells[i].Type, true
+	}
+	for _, n := range s.Hardware {
+		if n.ID == id {
+			return n.Type, true
+		}
+	}
+	return "", false
+}
+
+// Specs returns the engine specs of every cell: the puzzle's fixed cells
+// in puzzle order, then the player's nodes in solution order. Unset node
+// fields get their effective defaults. It assumes a validated solution
+// (unknown node types are skipped).
+func (s *Solution) Specs(p *puzzle.Puzzle, reg *cell.Registry) []cell.Spec {
+	out := make([]cell.Spec, 0, len(p.Cells)+len(s.Hardware))
 	for i := range p.Cells {
-		cells[i] = graph.CellPorts{ID: p.Cells[i].ID, Enabled: p.Cells[i].EnabledPorts()}
+		out = append(out, p.CellSpec(reg, &p.Cells[i]))
+	}
+	for i := range s.Hardware {
+		if sp, ok := s.NodeSpec(p, reg, i); ok {
+			out = append(out, sp)
+		}
+	}
+	return out
+}
+
+// NodeSpec builds the spec of player node i.
+func (s *Solution) NodeSpec(p *puzzle.Puzzle, reg *cell.Registry, i int) (cell.Spec, bool) {
+	n := &s.Hardware[i]
+	hc := s.nodeConfig(p, reg, i)
+	if _, ok := reg.Lookup(n.Type); !ok {
+		return cell.Spec{}, false
+	}
+	return cell.Spec{
+		ID: n.ID, Type: n.Type, ProgramMemory: hc.ProgramMemory,
+		PortCount: hc.Ports, Ports: graph.AllPorts(hc.Ports), PortFunctions: hc.PortFunctions, Config: hc.Config,
+	}, true
+}
+
+func (s *Solution) nodeConfig(p *puzzle.Puzzle, reg *cell.Registry, i int) cell.HardwareConfig {
+	n := &s.Hardware[i]
+	hc := cell.HardwareConfig{Ports: n.PortCount, PortFunctions: n.PortFunctions, ProgramMemory: n.ProgramMemory, Config: n.Config}
+	if e, ok := p.EffectiveHardware(reg, n.Type); ok {
+		return e.NodeDefaults(hc)
+	}
+	if a, ok := reg.Lookup(n.Type); ok {
+		h := cell.HardwareOf(a)
+		if hc.Ports == 0 {
+			hc.Ports = h.Ports.Default
+		}
+		if hc.ProgramMemory == 0 && h.ProgramMemory != nil {
+			hc.ProgramMemory = h.ProgramMemory.Default
+		}
+		hc.Config = cell.WithDefaults(a.ConfigSchema(), hc.Config)
+	}
+	return hc
+}
+
+// Topology builds the connection graph over every cell.
+func (s *Solution) Topology(p *puzzle.Puzzle, reg *cell.Registry) (*graph.Topology, diag.List) {
+	specs := s.Specs(p, reg)
+	cells := make([]graph.CellPorts, len(specs))
+	for i, sp := range specs {
+		cells[i] = graph.CellPorts{ID: sp.ID, Enabled: sp.Ports}
 	}
 	t, errs := graph.Build(cells, s.Connections)
 	var l diag.List

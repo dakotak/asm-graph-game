@@ -6,6 +6,7 @@
 puzzle.yaml ──► puzzle.Parse ──► Puzzle.Validate(registry)
                                          │
 solution.yaml ─► solution.Parse ─► Solution.Validate(puzzle) ──► graph.Build
+                 (player hardware: plugin limits + puzzle rules + budget)
                                          │
                                          ▼
                        engine.Prepare: compile each program (asm + vm.ISA)
@@ -16,8 +17,9 @@ solution.yaml ─► solution.Parse ─► Solution.Validate(puzzle) ──► g
                  ┌───────────────────────┼────────────────────────┐
                  ▼                       ▼                        ▼
        NewMachine(test 0)      NewMachine(test 1)   …   (one fresh machine per test case)
-                 │
-         Step / Run ──► events ──► Session ──► protocol.Service ──► transport/stdio
+                 │                                         │
+         Step / Run ──► events ──► Session ──►        RunAll ──► Score{cost, ticks, bytes}
+                 protocol.Service ──► transport/stdio | transport/web ──► scoring.Store (bests)
 ```
 
 ## Packages
@@ -26,13 +28,14 @@ solution.yaml ─► solution.Parse ─► Solution.Validate(puzzle) ──► g
 |---|---|---|
 | `vm` | `Word` (int32) arithmetic, `Port`, `ISA`/`InstructionDef`, bytecode encode/decode, `Program` image | none |
 | `asm` | One shared parser; compiler that resolves operands through a per-slot resolver table and encodes against any `vm.ISA` | `vm` |
-| `cell` | Plugin contracts (`Architecture`, `Instance`, `Processor`, `Device`, `Source`, `Sink`), config schema helpers, `Registry` | `vm` |
+| `cell` | Plugin contracts (`Architecture`, `Instance`, `Processor`, `Peripheral`, `Device`, `Source`, `Sink`), hardware descriptions (`HardwareSpec`, cost model, `ValidateHardware`), config schema helpers, `Registry` | `vm` |
 | `cells` | Built-in architectures and `ExecCore`, the shared core-instruction semantics | `cell`, `vm` |
 | `plugins` | `Loader` abstraction: `Static` and `Native` (Go `plugin` package, build-tagged) | `cell` |
 | `graph` | Topology construction and validation | `vm` |
-| `puzzle`, `solution` | YAML schemas, strict decoding, semantic validation with YAML paths and line numbers | `cell`, `graph`, `diag` |
+| `puzzle`, `solution` | YAML schemas (v1 and v2), strict decoding, semantic validation with YAML paths and line numbers; puzzle hardware rules and effective limits; player nodes, constraint checks, cost reports; v1 migration | `cell`, `graph`, `diag` |
 | `validate` | Exact-output stream validation (outside the cells) | `vm` |
 | `engine` | `Prepare` → `Blueprint`; `Machine` (one test case); `RunTest`/`RunAll`; `Session` (stateful API) | everything above |
+| `scoring` | Per-dimension comparison, Pareto dominance, file-based personal bests | `engine` |
 | `protocol` | Transport-independent command dispatcher and event filtering | `engine` |
 | `transport/jsonrpc` | JSON-RPC 2.0 message handling shared by all transports | `protocol` |
 | `transport/stdio` | JSON-RPC over newline-delimited stdin/stdout | `transport/jsonrpc` |
@@ -49,6 +52,18 @@ immutable description: its ISA, config schema, and constructor. Calling
 `New` gives a mutable `Instance` for exactly one test case. Every test
 case builds every instance from scratch, so there is no reset logic that
 could miss some state.
+
+**Plugins define capabilities, puzzles define restrictions, players
+design within both.** A `cell.HardwareSpec` declares what a type can
+physically do (ports, port functions, memory, cost, what puzzles may
+override). A puzzle's `hardware` rules can only narrow those limits. The
+solution's nodes are checked against both, and costs are computed from
+the effective model. See [hardware.md](hardware.md).
+
+**Passive hardware is not a fake processor.** Peripherals implement
+`cell.Peripheral`: each tick they offer an operation per port, and the
+engine matches offers with the same arbitration it uses for every
+request, still completing at most one transfer per cell per tick.
 
 **The engine owns everything between cells.** Processors only implement
 `Execute(instruction, sourceValues) → Outcome`. The engine handles
@@ -89,8 +104,8 @@ The CLI and the JSON-RPC API report the same diagnostics.
 
 | Artifact | Version | Where |
 |---|---|---|
-| Puzzle files | `schema_version: 1` | `puzzle.SchemaVersion` |
-| Solution files | `schema_version: 1` | `solution.SchemaVersion` |
-| Bytecode | `1` | `vm.BytecodeVersion`, stored in `Program` images |
-| Plugin contract | `1` | `cell.APIVersion`, checked against a native plugin's `CellAPIVersion` |
-| JSON-RPC protocol | `"1"` | `protocol.Version`, reported by `initialize` |
+| Puzzle files | `schema_version: 2` (1 still read) | `puzzle.SchemaVersion`, `puzzle.MinSchemaVersion` |
+| Solution files | `schema_version: 2` (1 still read) | `solution.SchemaVersion` |
+| Bytecode | `2` (1 still read) | `vm.BytecodeVersion`, stored in `Program` images |
+| Plugin contract | `2` | `cell.APIVersion`, checked against a native plugin's `CellAPIVersion` |
+| JSON-RPC protocol | `"2"` | `protocol.Version`, reported by `initialize` |

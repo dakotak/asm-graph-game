@@ -1,4 +1,4 @@
-# Bytecode format (version 1)
+# Bytecode format (version 2)
 
 Assembly compiles to a byte-oriented, variable-length encoding. **Program
 memory is the length of this encoding in bytes.** The source text, line
@@ -32,8 +32,14 @@ count or length prefix.
 | `0x10`–`0x13` | `P0`–`P3` | 1 |
 | `0x14` | `ANY` | 1 |
 | `0x15` | `LAST` | 1 |
+| `0x44`–`0x7F` | `P4`–`P63` (`0x40` + port number) | 1 |
 | `0x80`–`0xFF` | inline immediate −64…63 (low 7 bits, sign-extended) | 1 |
 | `0x20` | immediate as a zigzag LEB128 varint (sources only) | 2–6 |
+
+Every port costs one byte, whatever its number. `0x40`–`0x43` are
+invalid, so each port has exactly one encoding. The bytecode can name up
+to 64 physical ports; each architecture declares how many it actually
+supports, and the assembler rejects ports the cell does not have.
 
 **Target slots** have no tag. They hold the absolute **byte address** of
 the target instruction as an unsigned LEB128 varint: 1 byte for addresses
@@ -52,7 +58,8 @@ Addresses only grow from pass to pass, so this always finishes.
 | `ADD -2147483648` | 7 | `02 20 ff ff ff ff 0f` |
 | `MOV P0, ACC` | 3 | `01 10 01` |
 | `JMP 0` | 2 | `07 00` |
-| `PADD` (stack) | 1 | `46` |
+| `MOV ACC, P5` | 3 | `01 01 45` |
+| `PADD` (stack_processor) | 1 | `46` |
 
 ## Determinism and validation
 
@@ -76,8 +83,9 @@ every compiled program is decoded again before it runs.
 
 ## Program images and versioning
 
-`vm.Program` has `Version` (= `vm.BytecodeVersion` = 1), `Arch` (the cell
-type), and `Code`. `MarshalBinary` produces:
+`vm.Program` has `Version` (= `vm.BytecodeVersion` = 2), `Arch` (the cell
+type), and `Code`. Version 2 added the `P4`–`P63` tags. Every version-1
+image is also valid version 2, so loaders accept both. `MarshalBinary` produces:
 
 ```
 "AGBC" | version u8 | uvarint len(arch) | arch | uvarint len(code) | code

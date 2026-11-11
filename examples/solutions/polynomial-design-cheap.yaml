@@ -1,0 +1,24 @@
+schema_version: 2
+puzzle: polynomial-design
+
+# One two-port processor with 12 bytes: cheap, but every value takes five
+# instructions. Cost: 10 + 2 ports × 2 + ⌈12 / 4⌉ × 2 = 20.
+hardware:
+  - id: cpu
+    type: standard
+    port_count: 2
+    program_memory: 12
+
+connections:
+  - from: {cell: x, port: P0}
+    to: {cell: cpu, port: P0}
+  - from: {cell: cpu, port: P1}
+    to: {cell: y, port: P0}
+
+programs:
+  cpu: |
+    MOV P0, ACC
+    ADD ACC
+    ADD ACC
+    ADD 3
+    MOV ACC, P1

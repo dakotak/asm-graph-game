@@ -3,14 +3,14 @@ import { memo, useMemo } from 'react'
 import { Handle, Position, type NodeProps } from '@xyflow/react'
 import { useShallow } from 'zustand/react/shallow'
 import type { CellSnapshot, StateField } from '../../api/types'
-import { enabledPorts } from '../../lib/connections'
+import { nodeCost, portPlacement, type Side } from '../../lib/hardware'
 import { NODE_WIDTH } from '../../lib/layout'
 import { useSim } from '../../state/sim'
-import { cellStream, cellType, streamRole, useWorkspace } from '../../state/workspace'
+import { cellStream, cellType, findCell, streamRole, useWorkspace } from '../../state/workspace'
 import { formatValue } from '../ui'
 import { ACTIVITY_LABEL, cellActivity, portsOf, type PortInfo } from './portState'
 
-const PORT_POSITION: Record<string, Position> = { P0: Position.Left, P1: Position.Right, P2: Position.Top, P3: Position.Bottom }
+const SIDE_POSITION: Record<Side, Position> = { left: Position.Left, right: Position.Right, top: Position.Top, bottom: Position.Bottom }
 
 /**
  * Port labels sit outside the node, beside the handle and off to one side of
@@ -32,13 +32,15 @@ const ROLE_STYLE = {
 } as const
 
 /**
- * Data flows left to right in the auto layout, so a stream cell with a
- * single port puts it on the side facing the processors: inputs on the
- * right, outputs on the left. Everything else uses the fixed P0–P3 sides.
+ * Where a port's handle sits: P0 left, P1 right, P2 top, P3 bottom, then
+ * around again, spread evenly along each side. Data flows left to right in
+ * the auto layout, so a stream cell with a single port puts it on the side
+ * facing the processors: inputs on the right, outputs on the left.
  */
-function portPosition(port: string, role: Role, portCount: number): Position {
-  if (role && portCount === 1) return role === 'input' ? Position.Right : Position.Left
-  return PORT_POSITION[port]
+function handlePlacement(index: number, portCount: number, role: Role): { position: Position; offset: number } {
+  if (role && portCount === 1) return { position: role === 'input' ? Position.Right : Position.Left, offset: 50 }
+  const p = portPlacement(portCount)[index] ?? { side: 'left' as Side, offset: 50 }
+  return { position: SIDE_POSITION[p.side], offset: p.offset }
 }
 
 export interface CellNodeData extends Record<string, unknown> {
@@ -47,9 +49,17 @@ export interface CellNodeData extends Record<string, unknown> {
 
 function CellNodeImpl({ data, selected }: NodeProps & { data: CellNodeData }) {
   const id = data.cellId
-  const def = useWorkspace((s) => s.puzzleDoc?.puzzle.cells.find((c) => c.id === id))
+  const def = useWorkspace((s) => findCell(s.cells, id))
   const type = useWorkspace((s) => (def ? cellType(s.catalog, def.type) : undefined))
   const tests = useWorkspace((s) => s.puzzleDoc?.puzzle.tests)
+  const cost = useWorkspace((s) => (def?.player ? nodeCost(def, s.hardwareCatalog?.find((e) => e.type === def.type), s.hardwareReport) : null))
+  // Backend constraint violations for this node (paths hardware[i]...).
+  const issues = useWorkspace(
+    useShallow((s) => {
+      const i = s.solution?.hardware.findIndex((n) => n.id === id) ?? -1
+      return i < 0 ? [] : s.hardwareIssues.filter((d) => d.path === `hardware[${i}]` || d.path?.startsWith(`hardware[${i}].`)).map((d) => d.message)
+    }),
+  )
   const connections = useWorkspace(useShallow((s) => s.solution?.connections.filter((c) => c.from.cell === id || c.to.cell === id) ?? []))
   const snap = useSim((s) => s.view.cells[id])
   const started = useSim((s) => s.started)
@@ -63,20 +73,21 @@ function CellNodeImpl({ data, selected }: NodeProps & { data: CellNodeData }) {
     return ids.sort().join('|')
   })
   const ports = useMemo(
-    () => (def ? portsOf(id, enabledPorts(def), connections, snap, new Set(activeKey ? activeKey.split('|') : [])) : []),
-    [def, id, connections, snap, activeKey],
+    () => (def ? portsOf(def, connections, snap, new Set(activeKey ? activeKey.split('|') : [])) : []),
+    [def, connections, snap, activeKey],
   )
   if (!def) return null
   const activity = cellActivity(snap, started)
   const act = ACTIVITY_LABEL[activity]
   const role: Role = type?.programmable ? undefined : streamRole(def, tests)
   const rs = role ? ROLE_STYLE[role] : undefined
+  const peripheral = !type?.programmable && !role
   return (
     <div
       className={clsx(
         'border bg-panel font-mono text-[11px] shadow-sm',
-        rs ? ['rounded-md', rs.edge] : 'rounded-sm',
-        selected ? 'border-accent ring-1 ring-accent' : (rs?.border ?? 'border-line-strong'),
+        rs ? ['rounded-md', rs.edge] : peripheral ? 'rounded-lg border-dashed' : 'rounded-sm',
+        selected ? 'border-accent ring-1 ring-accent' : issues.length ? 'border-bad' : (rs?.border ?? 'border-line-strong'),
         activity === 'blocked' && !selected && 'border-warn/70',
         activity === 'error' && 'border-bad',
       )}
@@ -84,16 +95,30 @@ function CellNodeImpl({ data, selected }: NodeProps & { data: CellNodeData }) {
       data-testid={`cell-${id}`}
       data-activity={activity}
       data-role={role}
+      data-player={def.player || undefined}
     >
       <div className="flex items-center gap-2 border-b border-line bg-panel-2 px-2 py-1">
         {rs && role === 'input' && <RoleChip role={role} />}
         <span className="truncate font-semibold text-fg">{id}</span>
         {rs && role === 'output' && <RoleChip role={role} />}
         {!rs && <span className="ml-auto text-[9px] tracking-widest text-fg-muted uppercase">{def.type}</span>}
+        {cost !== null && (
+          <span className="shrink-0 rounded-sm bg-accent/15 px-1 text-[9px] text-accent" title="Hardware cost of this node" data-testid={`cost-${id}`}>
+            ¤{cost}
+          </span>
+        )}
       </div>
+      {issues.length > 0 && (
+        <div className="border-b border-line bg-bad/10 px-2 py-0.5 text-[10px] text-bad" title={issues.join('\n')} data-testid={`issues-${id}`}>
+          ✗ {issues[0]}
+          {issues.length > 1 && ` (+${issues.length - 1})`}
+        </div>
+      )}
       <div className="space-y-1 px-2 py-1.5">
         {type?.programmable ? (
-          <ProcessorBody id={id} snap={snap} started={started} memory={def.program_memory ?? 0} fields={type.state} />
+          <ProcessorBody id={id} snap={snap} started={started} memory={def.programMemory} fields={type.state} />
+        ) : peripheral ? (
+          <PeripheralBody snap={snap} started={started} fields={type?.state} config={def.config} />
         ) : (
           <StreamBody id={id} snap={snap} started={started} />
         )}
@@ -104,7 +129,7 @@ function CellNodeImpl({ data, selected }: NodeProps & { data: CellNodeData }) {
         {snap?.blocked && snap.request && <span className="ml-1 truncate text-fg-muted">{snap.request}</span>}
       </div>
       {ports.map((p) => (
-        <PortHandle key={p.port} info={p} position={portPosition(p.port, role, ports.length)} role={role} />
+        <PortHandle key={p.port} info={p} placement={handlePlacement(p.index, def.portCount, role)} role={role} />
       ))}
     </div>
   )
@@ -122,14 +147,17 @@ function RoleChip({ role }: { role: 'input' | 'output' }) {
   )
 }
 
-function PortHandle({ info, position: pos, role }: { info: PortInfo; position: Position; role: Role }) {
+function PortHandle({ info, placement, role }: { info: PortInfo; placement: { position: Position; offset: number }; role: Role }) {
+  const pos = placement.position
+  const vertical = pos === Position.Left || pos === Position.Right
   const styles: Record<PortInfo['visual'], string> = {
     free: role === 'input' ? '!border-in !bg-bg' : role === 'output' ? '!border-out !bg-bg' : '!border-wire !bg-bg',
     connected: '!border-wire !bg-wire',
     waiting: '!border-warn !bg-warn/40',
     active: '!border-accent !bg-accent',
   }
-  const title = `${info.port}: ${info.peer ? `connected to ${info.peer}` : 'available — drag to connect'}${info.visual === 'waiting' ? ' (waiting)' : info.visual === 'active' ? ' (transferring)' : ''}`
+  const fn = info.function ? ` (${info.function})` : ''
+  const title = `${info.port}${fn}: ${info.peer ? `connected to ${info.peer}` : 'available — drag to connect'}${info.visual === 'waiting' ? ' (waiting)' : info.visual === 'active' ? ' (transferring)' : ''}`
   return (
     <Handle
       id={info.port}
@@ -137,15 +165,63 @@ function PortHandle({ info, position: pos, role }: { info: PortInfo; position: P
       position={pos}
       isConnectable={!info.peer}
       className={clsx('!border-2', styles[info.visual])}
+      style={vertical ? { top: `${placement.offset}%` } : { left: `${placement.offset}%` }}
       title={title}
       aria-label={title}
       data-port={info.port}
+      data-function={info.function}
       data-visual={info.visual}
     >
-      <span className={clsx('pointer-events-none absolute rounded-sm bg-bg/80 px-0.5 font-mono text-[10px] leading-none text-fg-muted', LABEL_POSITION[pos])}>
+      <span className={clsx('pointer-events-none absolute rounded-sm bg-bg/80 px-0.5 font-mono text-[10px] leading-none whitespace-nowrap text-fg-muted', LABEL_POSITION[pos])}>
         {info.port}
+        {info.function && <span className="ml-0.5 text-accent">{info.function}</span>}
       </span>
     </Handle>
+  )
+}
+
+/**
+ * Passive hardware: no program, just its stored data (e.g. a stack's
+ * values, top first) and its configuration.
+ */
+function PeripheralBody({ snap, started, fields, config }: { snap?: CellSnapshot; started: boolean; fields?: StateField[]; config?: Record<string, unknown> }) {
+  const live = started && snap ? snap.state : undefined
+  const rows = stateRows(fields, live).filter((r) => r.name !== 'capacity')
+  const capacity = live?.capacity ?? config?.capacity
+  return (
+    <>
+      {rows.map((r) => {
+        const arr = Array.isArray(r.value) ? (r.value as number[]) : []
+        if (r.kind !== 'list') {
+          return (
+            <div key={r.name} className="text-fg-muted">
+              {r.name} <span className={live ? 'text-fg' : 'text-fg-faint'}>{live ? formatValue(r.value) : '0'}</span>
+            </div>
+          )
+        }
+        const top = [...arr].reverse().slice(0, 8)
+        return (
+          <div key={r.name} title={r.summary || undefined}>
+            <div className="text-fg-muted">
+              {r.name}
+              <span className="float-right">
+                {arr.length}
+                {capacity !== undefined ? `/${String(capacity)}` : ''}
+              </span>
+            </div>
+            <div className="flex flex-wrap gap-1">
+              {top.map((v, i) => (
+                <span key={i} className={clsx('rounded-sm border px-1 text-[10px]', i === 0 ? 'border-accent text-fg' : 'border-line text-fg-muted')}>
+                  {v}
+                </span>
+              ))}
+              {arr.length > top.length && <span className="text-fg-faint">+{arr.length - top.length}</span>}
+              {arr.length === 0 && <span className="text-fg-faint">{live ? 'empty' : 'not running'}</span>}
+            </div>
+          </div>
+        )
+      })}
+    </>
   )
 }
 

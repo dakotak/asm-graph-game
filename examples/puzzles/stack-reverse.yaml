@@ -1,0 +1,58 @@
+schema_version: 2
+
+id: stack-reverse
+name: Stack Reverse
+description: |
+  The input is a series of sequences, each terminated by 0 (a 0 never
+  appears inside a sequence). Output every sequence in reverse order,
+  followed by its 0 terminator.
+
+  This puzzle gives you only the input and output. Build the rest: at
+  least one processor to run the logic and a passive stack to hold the
+  values. The stack runs no code. Choose what each of its ports does
+  (PUSH, POP, PEEK, or SIZE) and use it by writing to and reading from
+  those ports.
+
+cells:
+  - id: in
+    type: input
+    config: {stream: sequences}
+
+  - id: out
+    type: output
+    config: {stream: reversed}
+
+hardware:
+  max_nodes: 3
+  max_cost: 50
+  catalog:
+    standard:
+      max: 2
+      program_memory: {min: 8, max: 32}
+    stack:
+      min: 1
+      max: 1
+      config:
+        capacity: {max: 12}
+
+limits:
+  max_ticks: 5000
+
+tests:
+  - name: basic
+    inputs:
+      sequences: [1, 2, 3, 0, 4, 5, 0]
+    outputs:
+      reversed: [3, 2, 1, 0, 5, 4, 0]
+
+  - name: single-and-empty
+    inputs:
+      sequences: [7, 0, 0, 9, 0]
+    outputs:
+      reversed: [7, 0, 0, 9, 0]
+
+  - name: long
+    inputs:
+      sequences: [1, 2, 3, 4, 5, 6, 7, 8, 0, -1, -2, 0]
+    outputs:
+      reversed: [8, 7, 6, 5, 4, 3, 2, 1, 0, -2, -1, 0]

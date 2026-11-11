@@ -23,7 +23,11 @@ export interface CellDef {
   id: string
   type: string
   program_memory?: number
+  /** schema v2: number of ports (defaults to the type's default) */
+  port_count?: number
   ports?: string[]
+  /** schema v2: function per port, for peripherals that have them */
+  port_functions?: string[]
   config?: Record<string, unknown>
   metadata?: Record<string, unknown>
 }
@@ -42,7 +46,118 @@ export interface Puzzle {
   cells: CellDef[]
   tests: TestCase[]
   limits?: { max_ticks?: number }
+  /** schema v2: present when players build their own hardware */
+  hardware?: HardwareRules
   metadata?: Record<string, unknown>
+}
+
+// --- hardware (cell.HardwareSpec, puzzle.HardwareRules) ------------------
+export type HardwareCategory = 'processor' | 'peripheral' | 'io'
+
+export interface Range {
+  min?: number
+  max?: number
+  default?: number
+}
+
+export interface PortFunctionDef {
+  name: string
+  direction: 'in' | 'out'
+  summary: string
+  min?: number
+  max?: number
+}
+
+export interface CostModel {
+  base: number
+  perPort: number
+  properties?: { property: string; cost: number; per: number }[]
+}
+
+export interface HardwareSpec {
+  category: HardwareCategory
+  ports: { min: number; max: number; default: number }
+  portFunctions?: { functions: PortFunctionDef[]; configurable: boolean; default: string[]; rule?: string }
+  programMemory?: { min: number; max: number; default: number }
+  cost: CostModel
+  puzzleOnly?: boolean
+  overrides: { cost: boolean; defaults: boolean }
+}
+
+export interface ConfigRule {
+  min?: number
+  max?: number
+  values?: unknown[]
+}
+
+export interface HardwareRules {
+  max_nodes?: number
+  max_cost?: number
+  ports?: Range
+  catalog?: Record<string, unknown>
+  prohibited?: string[]
+  required?: string[]
+}
+
+/** A type players may build, after the puzzle's rules (puzzle.Effective). */
+export interface EffectiveHardware {
+  type: string
+  spec: HardwareSpec
+  ports: { min: number; max: number; default: number }
+  programMemory?: { min: number; max: number; default: number }
+  functions?: string[]
+  functionMax?: Record<string, number>
+  config?: Record<string, ConfigRule>
+  cost: CostModel
+  min: number
+  max: number
+}
+
+export interface NodeReport {
+  id: string
+  type: string
+  category: HardwareCategory
+  ports: number
+  programMemory?: number
+  portFunctions?: string[]
+  cost: number
+}
+
+export interface HardwareReport {
+  allowed: boolean
+  nodes: NodeReport[]
+  totalCost: number
+  maxCost?: number
+  nodeCount: number
+  maxNodes?: number
+  counts: Record<string, number>
+}
+
+// --- scoring (engine.Score, scoring.Record) ------------------------------
+export type ScoreDimension = 'cost' | 'ticks' | 'bytes'
+
+export interface Score {
+  cost: number
+  ticks: number
+  bytes: number
+}
+
+export interface ScoreEntry {
+  score: Score
+  file: string
+  achieved: string
+}
+
+export interface ScoreRecord {
+  puzzle: string
+  bests: Partial<Record<ScoreDimension, ScoreEntry>>
+}
+
+export interface ScoreResponse {
+  passed: boolean
+  score?: Score
+  improved: ScoreDimension[]
+  record: ScoreRecord
 }
 
 // --- web API (transport/web) ---------------------------------------------
@@ -59,6 +174,9 @@ export interface PuzzleSummary {
   valid: boolean
   diagnostics?: Diagnostic[]
   solutions: number
+  /** players build their own hardware */
+  hardware: boolean
+  bests?: Partial<Record<ScoreDimension, ScoreEntry>>
 }
 
 export interface PuzzleDocument {
@@ -107,6 +225,7 @@ export interface CellTypeInfo {
   /** Fields CellSnapshot.state reports, in display order. */
   state?: StateField[]
   config?: ConfigField[]
+  hardware: HardwareSpec
 }
 
 export interface StateField {
@@ -209,12 +328,16 @@ export interface PortSnapshot {
   port: string
   enabled: boolean
   peer?: Endpoint
+  /** peripheral port function, e.g. "PUSH" */
+  function?: string
 }
 
 export interface CellSnapshot {
   id: string
   type: string
+  category: HardwareCategory
   programmable: boolean
+  player?: boolean
   programBytes?: number
   programMemory?: number
   pc: number
@@ -265,6 +388,7 @@ export interface Metrics {
   cellsSupplied: number
   cellsUsed: number
   connections: number
+  hardwareCost: number
 }
 
 export interface Snapshot {
@@ -318,7 +442,10 @@ export interface SuiteResult {
     cellsSupplied: number
     cellsUsed: number
     connections: number
+    hardwareCost: number
   }
+  /** set only when every test passed */
+  score?: Score
 }
 
 // --- events (engine.Event) -----------------------------------------------
@@ -385,4 +512,4 @@ export interface PausedData {
 
 export type EventLevel = 'none' | 'lifecycle' | 'ticks' | 'all'
 
-export const PROTOCOL_VERSION = '1'
+export const PROTOCOL_VERSION = '2'

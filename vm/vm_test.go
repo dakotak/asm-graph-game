@@ -194,7 +194,41 @@ func TestParsePort(t *testing.T) {
 	if _, ok := ParsePhysicalPort("ANY"); ok {
 		t.Error("ANY is not physical")
 	}
-	if _, ok := ParsePort("P4"); ok {
-		t.Error("P4 is not a port")
+	for _, s := range []string{"P4", "p7", "P63"} {
+		if _, ok := ParsePhysicalPort(s); !ok {
+			t.Errorf("%s should be a physical port", s)
+		}
+	}
+	for _, s := range []string{"P64", "P04", "P", "PX", "P-1"} {
+		if _, ok := ParsePort(s); ok {
+			t.Errorf("%s should not be a port", s)
+		}
+	}
+	if PortN(12).String() != "P12" || PortAny.String() != "ANY" || PortLast.String() != "LAST" {
+		t.Error("port names")
+	}
+}
+
+// Every port has exactly one single-byte encoding; P0..P3, ANY and LAST
+// keep their version-1 tags so old programs decode unchanged.
+func TestPortEncoding(t *testing.T) {
+	isa := testISA(t)
+	mov, _ := isa.Lookup("MOV")
+	want := map[Port]byte{P0: 0x10, P3: 0x13, PortAny: 0x14, PortLast: 0x15, PortN(4): 0x44, PortN(63): 0x7F}
+	for p, tag := range want {
+		ops := []Operand{{Kind: OperandRegister, Register: RegACC}, {Kind: OperandPort, Port: p}}
+		code, err := EncodeInstruction(nil, mov, ops)
+		if err != nil || len(code) != 3 || code[2] != tag {
+			t.Fatalf("%s: % x %v", p, code, err)
+		}
+		in, err := DecodeInstruction(isa, code, 0)
+		if err != nil || in.Operands[1].Port != p {
+			t.Fatalf("%s: decoded %+v %v", p, in, err)
+		}
+	}
+	for _, bad := range []byte{0x40, 0x43, 0x16} {
+		if _, err := DecodeInstruction(isa, []byte{OpMOV, RegACC, bad}, 0); err == nil {
+			t.Errorf("tag 0x%02X should be invalid", bad)
+		}
 	}
 }

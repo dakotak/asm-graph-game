@@ -32,9 +32,9 @@ solution and compiles it too.
 $ asmgraph validate examples/puzzles/double-input.yaml examples/solutions/invalid/double-input-broken.yaml
 examples/solutions/invalid/double-input-broken.yaml:8:31: connections[1].from.port: port P2 is disabled on cell "input" by the puzzle
 examples/solutions/invalid/double-input-broken.yaml:10:11: connections[2].from: port processor.P0 is already used by connections[0]
-examples/solutions/invalid/double-input-broken.yaml:12:35: connections[3].from.port: invalid port "P5" (expected P0, P1, P2, or P3)
+examples/solutions/invalid/double-input-broken.yaml:12:35: connections[3].from.port: cell "processor" has no port P5: it has 4 port(s), P0-P3
 examples/solutions/invalid/double-input-broken.yaml:18: programs.processor: cell processor, line 2:1: unknown instruction MUL for cell type standard (supported: NOP MOV ADD SUB NEG SAV SWP JMP JEZ JNZ JGZ JLZ HLT)
-examples/solutions/invalid/double-input-broken.yaml:19: programs.processor: cell processor, line 3:10: MOV destination operand: "P9" is not a valid destination: expected a register (NIL, ACC) or a port (P0-P3, ANY, LAST)
+examples/solutions/invalid/double-input-broken.yaml:19: programs.processor: cell processor, line 3:10: MOV destination operand: port P9 does not exist on this cell: it has 4 port(s), P0-P3
 examples/solutions/invalid/double-input-broken.yaml:20: programs.processor: cell processor, line 4:5: JMP target operand: undefined label "LOOP"
 solution validation/compilation failed: 6 error(s)
 ```
@@ -94,10 +94,36 @@ prints per-test results and summary metrics. It takes `--max-ticks` and
 `--cycles`. JSON output is a `SuiteResult`; see
 [protocol.md](protocol.md#results).
 
+For puzzles with player hardware it also prints the hardware cost, and a
+passing solution gets its three independent scores:
+
+```
+hardware cost: 32 of 50 (cpu standard 22, stack stack 10)
+score: cost 32   ticks 92 (worst case)   bytes 26
+```
+
+See [hardware.md](hardware.md#scoring).
+
 ## `types`
 
 Lists the registered cell types, including any loaded plugins, with their
-registers, instructions (opcode, operands, summary), and config fields.
+hardware description (category, port range, cost model, program memory
+range, port functions), registers, instructions (opcode, operands,
+summary), and config fields.
+
+## `migrate FILE... [--write]`
+
+Rewrites schema-v1 puzzles and solutions as schema v2 without changing
+their behaviour (see [hardware.md](hardware.md#migration-from-schema-v1)).
+It prints the result, or replaces the files with `--write`, and lists
+every change on stderr. Files that are already v2 are left alone.
+
+```
+$ asmgraph migrate examples/puzzles/reverse-sequences.yaml --write
+examples/puzzles/reverse-sequences.yaml: schema_version: 1 → 2
+examples/puzzles/reverse-sequences.yaml: cells[0]: 1 port(s), the input default; ports list removed
+examples/puzzles/reverse-sequences.yaml: cells[2].type: stack → stack_processor
+```
 
 ## `serve --stdio`
 

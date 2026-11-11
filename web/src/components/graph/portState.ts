@@ -2,28 +2,35 @@
 // only interprets the CellSnapshot fields the engine reports (request,
 // blocked, last, ports) — no execution semantics are re-implemented.
 import type { CellSnapshot, Connection } from '../../api/types'
-import { connectionId, PHYSICAL_PORTS } from '../../lib/connections'
+import { connectionId } from '../../lib/connections'
+import { portName, type CellView } from '../../lib/hardware'
 
 export type PortVisual = 'free' | 'connected' | 'waiting' | 'active'
 
 export interface PortInfo {
   port: string
+  /** port number (P3 → 3), which decides where its handle sits */
+  index: number
+  /** peripheral port function, e.g. "PUSH" */
+  function?: string
   visual: PortVisual
   peer?: string // "cell.port"
   connection?: string // connection id
 }
 
 export function portsOf(
-  cellId: string,
-  enabled: Set<string>,
+  cell: CellView,
   connections: Connection[],
   snap: CellSnapshot | undefined,
   activeConnections: Set<string>,
 ): PortInfo[] {
+  const cellId = cell.id
   const waiting = waitingPorts(snap)
   // Ports the puzzle disables are not part of the cell at all, so they are
-  // not shown (the inspector still lists them).
-  return PHYSICAL_PORTS.filter((port) => enabled.has(port)).map((port) => {
+  // not shown.
+  const ports: { port: string; index: number }[] = []
+  cell.enabled.forEach((on, index) => on && ports.push({ port: portName(index), index }))
+  return ports.map(({ port, index }) => {
     const c = connections.find((x) => (x.from.cell === cellId && x.from.port === port) || (x.to.cell === cellId && x.to.port === port))
     const peer = c ? (c.from.cell === cellId && c.from.port === port ? c.to : c.from) : undefined
     const id = c ? connectionId(c) : undefined
@@ -32,7 +39,7 @@ export function portsOf(
     else if (waiting.has(port) && (c || waiting.has('*unconnected'))) visual = 'waiting'
     else if (c) visual = 'connected'
     else if (waiting.has(port)) visual = 'waiting'
-    return { port, visual, peer: peer ? `${peer.cell}.${peer.port}` : undefined, connection: id }
+    return { port, index, function: cell.portFunctions?.[index], visual, peer: peer ? `${peer.cell}.${peer.port}` : undefined, connection: id }
   })
 }
 

@@ -41,8 +41,11 @@ discards writes. `ACC` is available on all built-in processors. Other
 registers are defined by the architecture. `BAK` cannot be used as an
 operand; only `SAV` and `SWP` reach it.
 
-**Ports.** `P0`–`P3` are the four physical slots. `ANY` and `LAST` are
-selectors that the engine resolves. Any instruction may read from or write
+**Ports.** `P0`, `P1`, … are the cell's physical ports: a cell with *n*
+ports has `P0` to `P(n-1)` (four on schema-v1 cells; configurable on
+player-built hardware). Naming a port the cell does not have is an
+assembly error. `ANY` and `LAST` are selectors that the engine resolves
+over the cell's ports. Any instruction may read from or write
 to a port, and the engine handles the blocking. See
 [execution.md](execution.md#communication).
 
@@ -95,12 +98,14 @@ Programs never have to halt: a test ends when its outputs are complete.
 ### `standard`
 
 Registers `ACC` and `BAK` (`BAK` is not addressable). Supports every core
-instruction. No configuration.
+instruction. No configuration. 1–8 ports (default 4), 1–1024 bytes of
+program memory.
 
-### `stack`
+### `stack_processor`
 
 Register `ACC` and a bounded LIFO stack (`stack_size`, default 16). There
-is no `BAK`, so `SAV` and `SWP` are not available.
+is no `BAK`, so `SAV` and `SWP` are not available. Schema-v1 puzzles call
+this type `stack`; it is renamed automatically.
 
 | Opcode | Instruction | Bytes | Effect |
 |---|---|---|---|
@@ -121,6 +126,13 @@ program density.
 `POP P1` pops when it executes. The value then waits in the instruction's
 pending-output slot until it is delivered (see
 [execution.md](execution.md#instruction-lifecycle)).
+
+### `stack` (passive)
+
+Not programmable: a LIFO peripheral whose ports are assigned `PUSH`,
+`POP`, `PEEK`, or `SIZE`. Processors use it with ordinary port reads and
+writes, for example `MOV ACC, P1` into a `PUSH` port. See
+[hardware.md](hardware.md#the-passive-stack).
 
 ### `input` / `output`
 

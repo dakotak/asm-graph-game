@@ -4,9 +4,9 @@
 import clsx from 'clsx'
 import type { ReactNode } from 'react'
 import type { Connection } from '../api/types'
-import { enabledPorts } from '../lib/connections'
 import { useSim } from '../state/sim'
-import { cellStream, cellType, useWorkspace } from '../state/workspace'
+import { cellStream, cellType, findCell, useWorkspace } from '../state/workspace'
+import { NodeEditor } from './HardwarePanel'
 import { formatValue } from './ui'
 import { portsOf, waitingPorts } from './graph/portState'
 
@@ -23,7 +23,7 @@ function Row({ k, children, mono = true }: { k: string; children: ReactNode; mon
 
 export function CellInspector() {
   const id = useWorkspace((s) => s.selectedCell)
-  const def = useWorkspace((s) => s.puzzleDoc?.puzzle.cells.find((c) => c.id === s.selectedCell))
+  const def = useWorkspace((s) => findCell(s.cells, s.selectedCell))
   const catalog = useWorkspace((s) => s.catalog)
   const connections = useWorkspace((s) => s.solution?.connections ?? NO_CONNECTIONS)
   const snap = useSim((s) => (id ? s.view.cells[id] : undefined))
@@ -32,15 +32,22 @@ export function CellInspector() {
   const output = useSim((s) => (id ? s.view.outputs[id] : undefined))
   if (!id || !def) return <div className="p-3 text-fg-muted">Select a cell to inspect it.</div>
   const type = cellType(catalog, def.type)
-  const ports = portsOf(id, enabledPorts(def), connections, started ? snap : undefined, new Set())
+  const ports = portsOf(def, connections, started ? snap : undefined, new Set())
   const waiting = started ? waitingPorts(snap) : new Set<string>()
   return (
     <div className="h-full overflow-auto bg-panel p-3 text-[12px]" data-testid="cell-inspector">
       <div className="mb-2 flex items-baseline gap-2">
         <span className="font-mono text-[13px] font-semibold">{id}</span>
         <span className="font-mono text-[10px] tracking-widest text-fg-muted uppercase">{def.type}</span>
+        <span className="ml-auto text-[10px] text-fg-faint">{def.player ? 'your hardware' : 'puzzle cell'}</span>
       </div>
       {type?.description && <p className="mb-3 text-fg-muted">{type.description}</p>}
+      {/* Passive nodes are configured in the editor pane (they have no code); processors here, next to their code. */}
+      {def.player && def.programmable && (
+        <div className="mb-3 rounded-sm border border-line p-2">
+          <NodeEditor id={id} />
+        </div>
+      )}
 
       <h3 className="label-caps mb-1">Execution</h3>
       {!started || !snap ? (
@@ -150,13 +157,14 @@ export function CellInspector() {
           {ports.map((p) => (
             <tr key={p.port} className="border-t border-line">
               <td className="py-0.5 pr-2">{p.port}</td>
+              {def.portFunctions && <td className="pr-2 text-accent">{p.function}</td>}
               <td className="pr-2">{p.peer ? `↔ ${p.peer}` : 'free'}</td>
               <td className="text-warn">{waiting.has(p.port) ? 'waiting' : ''}</td>
             </tr>
           ))}
         </tbody>
       </table>
-      {def.config && Object.keys(def.config).length > 0 && (
+      {!def.player && def.config && Object.keys(def.config).length > 0 && (
         <>
           <h3 className="label-caps mt-3 mb-1">Config</h3>
           {Object.entries(def.config).map(([k, v]) => (
@@ -167,7 +175,7 @@ export function CellInspector() {
         </>
       )}
       {cellStream(def) === undefined && type?.programmable && (
-        <p className="mt-3 text-[11px] text-fg-faint">Program memory: {def.program_memory} bytes</p>
+        <p className="mt-3 text-[11px] text-fg-faint">Program memory: {def.programMemory} bytes</p>
       )}
     </div>
   )

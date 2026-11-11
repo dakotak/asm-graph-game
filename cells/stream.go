@@ -14,6 +14,14 @@ const (
 	OutputType = "output"
 )
 
+// Stream cells are puzzle-only I/O. They use ANY over however many ports
+// the puzzle gives them; schema-v2 puzzles default to one port.
+var streamHardware = cell.HardwareSpec{
+	Category:   cell.CategoryIO,
+	Ports:      cell.PortSpec{Min: 1, Max: 8, Default: 1},
+	PuzzleOnly: true,
+}
+
 var streamSchema = []cell.ConfigField{{
 	Name: "stream", Type: cell.FieldString, Required: true,
 	Description: "Name of the test-case stream this cell is bound to.",
@@ -29,6 +37,7 @@ func (Input) Description() string {
 	return "Emits the values of a test-case input stream through ANY port."
 }
 func (Input) ISA() *vm.ISA                     { return nil }
+func (Input) Hardware() cell.HardwareSpec      { return streamHardware }
 func (Input) ConfigSchema() []cell.ConfigField { return streamSchema }
 func (Input) ValidateConfig(cfg map[string]any) []cell.ConfigError {
 	return configErrors(streamSchema, cfg)
@@ -96,6 +105,7 @@ func (Output) Description() string {
 	return "Receives values through ANY port; validated against an expected stream."
 }
 func (Output) ISA() *vm.ISA                     { return nil }
+func (Output) Hardware() cell.HardwareSpec      { return streamHardware }
 func (Output) ConfigSchema() []cell.ConfigField { return streamSchema }
 func (Output) ValidateConfig(cfg map[string]any) []cell.ConfigError {
 	return configErrors(streamSchema, cfg)

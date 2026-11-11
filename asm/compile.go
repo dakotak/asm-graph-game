@@ -12,6 +12,10 @@ type Options struct {
 	// MemoryLimit is the program-memory budget in bytes. Zero or negative
 	// means unlimited (used by tooling such as `asmgraph compile --nolimit`).
 	MemoryLimit int
+	// Ports is the cell's configured port count. When positive, physical
+	// port operands must name one of P0..P(Ports-1). Zero accepts any port
+	// the encoding supports (P0..P63).
+	Ports int
 }
 
 // Result is a successfully compiled program.
@@ -32,6 +36,7 @@ type Context struct {
 	ISA    *vm.ISA
 	Labels map[string]int
 	Count  int // number of instructions in the program
+	Ports  int // configured port count; 0 = unchecked
 }
 
 var resolvers = map[vm.SlotKind]Resolver{
@@ -46,7 +51,7 @@ func Compile(src string, isa *vm.ISA, opts Options) (*Result, ErrorList) {
 	if len(errs) > 0 {
 		return nil, errs
 	}
-	ctx := &Context{ISA: isa, Labels: map[string]int{}, Count: len(f.Statements)}
+	ctx := &Context{ISA: isa, Labels: map[string]int{}, Count: len(f.Statements), Ports: opts.Ports}
 	define := func(l Token, idx int) {
 		key := strings.ToUpper(l.Text)
 		if _, ok := vm.ParsePort(key); ok {
@@ -186,32 +191,42 @@ func resolveSource(c *Context, tok Token) (vm.Operand, error) {
 		}
 		return vm.Operand{Kind: vm.OperandImmediate, Value: v}, nil
 	}
-	if op, ok := resolveLocation(c, tok); ok {
-		return op, nil
+	if op, ok, err := resolveLocation(c, tok); ok {
+		return op, err
 	}
-	return vm.Operand{}, fmt.Errorf("%q is not a valid source: expected a register (%s), a port (P0-P3, ANY, LAST) or an integer literal",
-		tok.Text, registerList(c.ISA))
+	return vm.Operand{}, fmt.Errorf("%q is not a valid source: expected a register (%s), a port (%s, ANY, LAST) or an integer literal",
+		tok.Text, registerList(c.ISA), portList(c))
 }
 
 func resolveDest(c *Context, tok Token) (vm.Operand, error) {
 	if tok.Kind == TokNumber {
 		return vm.Operand{}, fmt.Errorf("cannot write to integer literal %s", tok.Text)
 	}
-	if op, ok := resolveLocation(c, tok); ok {
-		return op, nil
+	if op, ok, err := resolveLocation(c, tok); ok {
+		return op, err
 	}
-	return vm.Operand{}, fmt.Errorf("%q is not a valid destination: expected a register (%s) or a port (P0-P3, ANY, LAST)",
-		tok.Text, registerList(c.ISA))
+	return vm.Operand{}, fmt.Errorf("%q is not a valid destination: expected a register (%s) or a port (%s, ANY, LAST)",
+		tok.Text, registerList(c.ISA), portList(c))
 }
 
-func resolveLocation(c *Context, tok Token) (vm.Operand, bool) {
+func resolveLocation(c *Context, tok Token) (vm.Operand, bool, error) {
 	if p, ok := vm.ParsePort(tok.Text); ok {
-		return vm.Operand{Kind: vm.OperandPort, Port: p}, true
+		if p.Physical() && c.Ports > 0 && p.Index() >= c.Ports {
+			return vm.Operand{}, true, fmt.Errorf("port %s does not exist on this cell: it has %d port(s), %s", p, c.Ports, vm.PortRange(c.Ports))
+		}
+		return vm.Operand{Kind: vm.OperandPort, Port: p}, true, nil
 	}
 	if code, ok := c.ISA.Register(tok.Text); ok {
-		return vm.Operand{Kind: vm.OperandRegister, Register: code}, true
+		return vm.Operand{Kind: vm.OperandRegister, Register: code}, true, nil
 	}
-	return vm.Operand{}, false
+	return vm.Operand{}, false, nil
+}
+
+func portList(c *Context) string {
+	if c.Ports > 0 {
+		return vm.PortRange(c.Ports)
+	}
+	return "P0, P1, ..."
 }
 
 func resolveTarget(c *Context, tok Token) (vm.Operand, error) {

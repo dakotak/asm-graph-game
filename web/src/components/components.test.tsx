@@ -16,12 +16,14 @@ const initialWs = useWorkspace.getState()
 const initialSim = useSim.getState()
 
 function loadPuzzle() {
-  useWorkspace.setState({
-    catalog,
-    puzzleDoc: { summary: { id: puzzle.id, name: 'Double the Input' } as never, yaml: '', puzzle },
-    solution: emptySolution(puzzle, (t) => t === 'standard'),
-    selectedCell: 'processor',
-  })
+  useWorkspace.getState().setCatalog(catalog)
+  useWorkspace.getState().openPuzzle(
+    { summary: { id: puzzle.id, name: 'Double the Input' } as never, yaml: '', puzzle },
+    emptySolution(puzzle, (t) => t === 'standard'),
+    '',
+    false,
+  )
+  useWorkspace.setState({ selectedCell: 'processor' })
 }
 
 beforeEach(() => {
@@ -173,10 +175,11 @@ describe('port and cell presentation', () => {
   })
   it('classifies ports', () => {
     const conns = [{ from: { cell: 'input', port: 'P0' }, to: { cell: 'processor', port: 'P0' } }]
-    const ports = portsOf('processor', new Set(['P0', 'P1', 'P2']), conns, snap, new Set())
+    const cpu = { id: 'processor', type: 'standard', player: false, category: 'processor' as const, programmable: true, portCount: 4, enabled: [true, true, true, false], programMemory: 32 }
+    const ports = portsOf(cpu, conns, snap, new Set())
     expect(ports.map((p) => p.visual)).toEqual(['waiting', 'free', 'free'])
     expect(ports.map((p) => p.port)).toEqual(['P0', 'P1', 'P2'])
-    const active = portsOf('processor', new Set(['P0']), conns, undefined, new Set(['input:P0--processor:P0']))
+    const active = portsOf({ ...cpu, enabled: [true] , portCount: 1 }, conns, undefined, new Set(['input:P0--processor:P0']))
     expect(active[0].visual).toBe('active')
   })
   it('labels blocked processors and waiting stream cells', () => {

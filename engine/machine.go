@@ -15,15 +15,23 @@ import (
 
 const maxOperands = 3
 
-// tickReq is a cell's communication intent for the current tick. A cell
-// makes at most one request per tick, so it completes at most one port
-// transfer per tick.
+// tickReq is a cell's communication intent for the current tick.
+// Processors and devices make one request (a single operation on one port,
+// or on any of several with ANY); peripherals offer an operation per port.
+// Either way a cell completes at most one port transfer per tick.
 type tickReq struct {
-	op       cell.RequestOp
-	sel      vm.Port // as written: P0..P3, ANY, or LAST
-	eligible [vm.NumPorts]bool
-	value    vm.Word
-	noPort   string // why no port is eligible (e.g. LAST unset)
+	op     cell.RequestOp // processors/devices; RequestNone for peripherals
+	sel    vm.Port        // as written: P0..Pn, ANY, or LAST
+	ports  []portOffer    // per physical port: what the cell will do there
+	ranked bool           // rank candidates by port index (ANY, peripherals)
+	offers int            // number of ports with an operation
+	noPort string         // why no port is eligible (e.g. LAST unset)
+}
+
+// portOffer is the operation a cell is ready to perform on one port.
+type portOffer struct {
+	op    cell.RequestOp
+	value vm.Word // for writes
 }
 
 // cellRT is the runtime record of one cell inside a machine.
@@ -32,6 +40,8 @@ type cellRT struct {
 	inst  cell.Instance
 	proc  cell.Processor
 	dev   cell.Device
+	per   cell.Peripheral
+	names cell.PortDescriber
 	src   cell.Source
 	sink  cell.Sink
 	check *validate.Exact
@@ -64,6 +74,7 @@ type cellRT struct {
 	completed  bool
 	progressed bool
 	srcBuf     []vm.Word
+	offBuf     []cell.Offer
 	before     []byte
 }
 
@@ -141,13 +152,17 @@ func NewMachine(bp *Blueprint, testIndex int, opts Options) (*Machine, error) {
 				return nil, fmt.Errorf("cell %s: programmable type %s does not implement cell.Processor", cb.ID, cb.Type)
 			}
 			c.proc = p
+		} else if per, ok := inst.(cell.Peripheral); ok {
+			c.per = per
 		} else {
 			d, ok := inst.(cell.Device)
 			if !ok {
-				return nil, fmt.Errorf("cell %s: non-programmable type %s does not implement cell.Device", cb.ID, cb.Type)
+				return nil, fmt.Errorf("cell %s: non-programmable type %s implements neither cell.Peripheral nor cell.Device", cb.ID, cb.Type)
 			}
 			c.dev = d
 		}
+		c.names, _ = inst.(cell.PortDescriber)
+		c.req.ports = make([]portOffer, cb.Spec.PortCount)
 		c.src, _ = inst.(cell.Source)
 		if s, ok := inst.(cell.Sink); ok {
 			c.sink = s
@@ -209,7 +224,9 @@ func (m *Machine) Step() Status {
 	m.tick++
 	emitting := m.opts.Events != nil
 	for _, c := range m.cells {
-		c.req = tickReq{}
+		ports := c.req.ports
+		clear(ports)
+		c.req = tickReq{ports: ports}
 		c.matched, c.completed, c.progressed = false, false, false
 		if emitting {
 			c.before = m.appendCellState(c.before[:0], c)
@@ -218,11 +235,14 @@ func (m *Machine) Step() Status {
 
 	// 1. Evaluate.
 	for _, c := range m.cells {
-		if c.dev != nil {
+		switch {
+		case c.per != nil:
+			m.evalPeripheral(c)
+		case c.dev != nil:
 			if r := c.dev.Request(); r.Op != cell.RequestNone {
 				m.setRequest(c, r.Op, r.Port, r.Value)
 			}
-		} else {
+		default:
 			m.evalProcessor(c)
 		}
 	}
@@ -234,7 +254,7 @@ func (m *Machine) Step() Status {
 	var outChanged []*cellRT
 	for _, t := range accepted {
 		w, r := m.cells[t.w], m.cells[t.r]
-		v := w.req.value
+		v := w.req.ports[t.wp].value
 		if w.req.sel == vm.PortAny {
 			w.last, w.lastSet = t.wp, true
 		}
@@ -245,13 +265,18 @@ func (m *Machine) Step() Status {
 		w.progressed, r.progressed = true, true
 		w.used, r.used = true, true
 		m.transfers++
-		if w.dev != nil {
+		switch {
+		case w.per != nil:
+			w.per.Commit(t.wp, cell.RequestWrite, v)
+		case w.dev != nil:
 			w.dev.CommitWrite(t.wp)
-		} else {
+		default:
 			w.pendingOut = false
 			w.completed = true
 		}
-		if r.dev != nil {
+		if r.per != nil {
+			r.per.Commit(t.rp, cell.RequestRead, v)
+		} else if r.dev != nil {
 			r.dev.CommitRead(t.rp, v)
 			if r.check != nil {
 				// Report every received value, not only pass/fail
@@ -291,7 +316,7 @@ func (m *Machine) Step() Status {
 	// Blocked bookkeeping (cells whose request was not matched).
 	for _, c := range m.cells {
 		was := c.blocked
-		if c.req.op != cell.RequestNone && !c.matched && c.err == nil {
+		if (c.req.op != cell.RequestNone || c.req.offers > 0) && !c.matched && c.err == nil {
 			c.blocked = true
 			c.blockReason = m.blockReason(c)
 		} else {
@@ -332,20 +357,54 @@ func (m *Machine) Step() Status {
 }
 
 func (m *Machine) setRequest(c *cellRT, op cell.RequestOp, sel vm.Port, v vm.Word) {
-	c.req = tickReq{op: op, sel: sel, value: v}
+	c.req.op, c.req.sel, c.req.ranked = op, sel, sel == vm.PortAny
+	offer := portOffer{op: op, value: v}
+	n := len(c.req.ports)
 	switch {
 	case sel.Physical():
-		c.req.eligible[sel] = true
-	case sel == vm.PortAny:
-		for i := range c.req.eligible {
-			c.req.eligible[i] = true
+		if sel.Index() < n {
+			c.req.ports[sel] = offer
+			c.req.offers = 1
+		} else {
+			c.req.noPort = fmt.Sprintf("this cell has no port %s (it has %s)", sel, vm.PortRange(n))
 		}
+	case sel == vm.PortAny:
+		// ANY covers exactly the cell's configured ports.
+		for i := range c.req.ports {
+			c.req.ports[i] = offer
+		}
+		c.req.offers = n
 	case sel == vm.PortLast:
 		if c.lastSet {
-			c.req.eligible[c.last] = true
+			c.req.ports[c.last] = offer
+			c.req.offers = 1
 		} else {
 			c.req.noPort = "LAST is not set: no ANY transfer has completed on this cell yet"
 		}
+	}
+}
+
+// evalPeripheral collects a peripheral's per-port offers. They depend only
+// on the instance's own state, never on other cells or on visit order.
+func (m *Machine) evalPeripheral(c *cellRT) {
+	c.offBuf = c.per.Offers(c.offBuf[:0])
+	c.req.ranked = true
+	for _, o := range c.offBuf {
+		switch {
+		case !o.Port.Physical() || o.Port.Index() >= len(c.req.ports):
+			c.err = fmt.Errorf("peripheral offered port %s, which it does not have", o.Port)
+		case o.Op != cell.RequestRead && o.Op != cell.RequestWrite:
+			c.err = fmt.Errorf("peripheral offered an invalid operation on %s", o.Port)
+		case c.req.ports[o.Port].op != cell.RequestNone:
+			c.err = fmt.Errorf("peripheral offered two operations on %s", o.Port)
+		default:
+			c.req.ports[o.Port] = portOffer{op: o.Op, value: o.Value}
+			c.req.offers++
+			continue
+		}
+		clear(c.req.ports)
+		c.req.offers = 0
+		return
 	}
 }
 
@@ -471,8 +530,8 @@ func (m *Machine) retire(c *cellRT) {
 //
 // Candidate transfers are all connections whose two ends have a write and
 // a read request that include those ports. Each candidate gets a rank on
-// each side: 0 for a request naming a single port (P0..P3 or LAST), or the
-// port index for an ANY request. Candidates are accepted greedily in order
+// each side: 0 for a request naming a single port (P0..Pn or LAST), or the
+// port index for an ANY request or a peripheral offer. Candidates are accepted greedily in order
 // of (reader rank, writer rank), skipping any whose writer or reader has
 // already been matched. Two candidates that share a cell always differ in
 // that cell's rank, so the result depends only on the requests, never on
@@ -510,10 +569,7 @@ func (m *Machine) match() []transfer {
 
 func (m *Machine) addCandidate(w, r graph.Link) {
 	cw, cr := m.cells[w.Cell], m.cells[r.Cell]
-	if cw.req.op != cell.RequestWrite || !cw.req.eligible[w.Port] {
-		return
-	}
-	if cr.req.op != cell.RequestRead || !cr.req.eligible[r.Port] {
+	if cw.req.ports[w.Port].op != cell.RequestWrite || cr.req.ports[r.Port].op != cell.RequestRead {
 		return
 	}
 	m.cands = append(m.cands, transfer{
@@ -523,14 +579,43 @@ func (m *Machine) addCandidate(w, r graph.Link) {
 }
 
 func rank(c *cellRT, p vm.Port) int {
-	if c.req.sel == vm.PortAny {
-		return int(p)
+	if c.req.ranked {
+		return p.Index()
 	}
 	return 0
 }
 
+// portLabel names a port for messages, including its function on
+// peripherals that describe their ports (e.g. "P1 (POP)").
+func (m *Machine) portLabel(c *cellRT, p vm.Port) string {
+	if c.names != nil {
+		if f := c.names.PortFunction(p); f != "" {
+			return p.String() + " (" + f + ")"
+		}
+	}
+	return p.String()
+}
+
 func (m *Machine) blockReason(c *cellRT) string {
 	r := c.req
+	topo := m.bp.Topology
+	idx := c.bp.Index
+	if c.per != nil {
+		var parts []string
+		for i, o := range r.ports {
+			if o.op == cell.RequestNone {
+				continue
+			}
+			p := vm.PortN(i)
+			if _, ok := topo.Peer(idx, p); ok {
+				parts = append(parts, m.portLabel(c, p))
+			}
+		}
+		if len(parts) == 0 {
+			return "waiting: none of the ready ports are connected"
+		}
+		return "waiting for a neighbour on " + strings.Join(parts, ", ")
+	}
 	verb, want := "read from", "write"
 	if r.op == cell.RequestWrite {
 		verb, want = "write to", "read"
@@ -538,11 +623,10 @@ func (m *Machine) blockReason(c *cellRT) string {
 	if r.noPort != "" {
 		return fmt.Sprintf("cannot %s LAST: %s", verb, r.noPort)
 	}
-	topo := m.bp.Topology
-	idx := c.bp.Index
 	if r.sel == vm.PortAny {
 		var peers []string
-		for p := vm.Port(0); p < vm.NumPorts; p++ {
+		for i := 0; i < topo.NumPorts(idx); i++ {
+			p := vm.PortN(i)
 			if l, ok := topo.Peer(idx, p); ok {
 				peers = append(peers, fmt.Sprintf("%s via %s", topo.CellID(l.Cell), p))
 			}
@@ -553,9 +637,9 @@ func (m *Machine) blockReason(c *cellRT) string {
 		return fmt.Sprintf("waiting to %s ANY: no connected cell is ready to %s (%s)", verb, want, strings.Join(peers, ", "))
 	}
 	var p vm.Port
-	for i, ok := range r.eligible {
-		if ok {
-			p = vm.Port(i)
+	for i, o := range r.ports {
+		if o.op != cell.RequestNone {
+			p = vm.PortN(i)
 		}
 	}
 	label := p.String()
@@ -568,6 +652,23 @@ func (m *Machine) blockReason(c *cellRT) string {
 	l, ok := topo.Peer(idx, p)
 	if !ok {
 		return fmt.Sprintf("cannot %s %s: port is not connected", verb, label)
+	}
+	peer := m.cells[l.Cell]
+	if pf := peer.bp.Hardware.PortFunctions; pf != nil && peer.names != nil {
+		if f := peer.names.PortFunction(l.Port); f != "" {
+			// A write into a port that only sends (or a read from one that
+			// only receives) can never complete; say so instead of
+			// "not ready".
+			if fn, ok := pf.Lookup(f); ok {
+				if r.op == cell.RequestWrite && fn.Direction == cell.DirectionOut {
+					return fmt.Sprintf("cannot write to %s: %s.%s is a %s port, which only sends values", label, topo.CellID(l.Cell), l.Port, fn.Name)
+				}
+				if r.op == cell.RequestRead && fn.Direction == cell.DirectionIn {
+					return fmt.Sprintf("cannot read from %s: %s.%s is a %s port, which only receives values", label, topo.CellID(l.Cell), l.Port, fn.Name)
+				}
+			}
+			return fmt.Sprintf("waiting to %s %s: %s.%s (%s) is not ready to %s", verb, label, topo.CellID(l.Cell), l.Port, f, want)
+		}
 	}
 	return fmt.Sprintf("waiting to %s %s: %s.%s is not ready to %s", verb, label, topo.CellID(l.Cell), l.Port, want)
 }
@@ -793,6 +894,7 @@ func (m *Machine) metrics() Metrics {
 		Ticks: m.tick, Instructions: m.instructions, Transfers: m.transfers,
 		ProgramBytes:  map[string]int{},
 		CellsSupplied: len(m.cells), Connections: m.bp.Topology.NumConnections(),
+		HardwareCost: m.bp.Hardware.TotalCost,
 	}
 	for _, c := range m.cells {
 		if c.bp.Program != nil {
@@ -860,6 +962,7 @@ func (m *Machine) CellSnapshot(id string) (*CellSnapshot, bool) {
 func (m *Machine) cellSnapshot(c *cellRT) CellSnapshot {
 	cs := CellSnapshot{
 		ID: c.bp.ID, Type: c.bp.Type, Programmable: c.bp.Programmable,
+		Category: string(c.bp.Hardware.Category), Player: c.bp.Player,
 		ProgramMemory: c.bp.Spec.ProgramMemory,
 		Blocked:       c.blocked, BlockReason: c.blockReason, Halted: c.halted,
 		State: c.inst.Inspect(), Completed: c.completedN,
@@ -881,8 +984,12 @@ func (m *Machine) cellSnapshot(c *cellRT) CellSnapshot {
 		cs.Request = op + " " + c.req.sel.String()
 	}
 	topo := m.bp.Topology
-	for p := vm.Port(0); p < vm.NumPorts; p++ {
+	for i := 0; i < topo.NumPorts(c.bp.Index); i++ {
+		p := vm.PortN(i)
 		ps := PortSnapshot{Port: p.String(), Enabled: topo.Enabled(c.bp.Index, p)}
+		if c.names != nil {
+			ps.Function = c.names.PortFunction(p)
+		}
 		if l, ok := topo.Peer(c.bp.Index, p); ok {
 			ps.Peer = &graph.Endpoint{Cell: topo.CellID(l.Cell), Port: l.Port.String()}
 		}
@@ -896,6 +1003,8 @@ func (m *Machine) cellSnapshot(c *cellRT) CellSnapshot {
 	case c.pendingOut:
 		cs.Stage = "write"
 	case c.dev != nil && c.req.op == cell.RequestNone:
+		cs.Stage = "idle"
+	case c.per != nil && c.req.offers == 0:
 		cs.Stage = "idle"
 	default:
 		cs.Stage = "ready"

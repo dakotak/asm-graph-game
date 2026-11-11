@@ -113,6 +113,9 @@ test('step, run to completion and reset follow the engine', async ({ page }) => 
 })
 
 test('invalid connections are rejected in the graph', async ({ page }) => {
+  await openPuzzle(page, 'double-input')
+  await expect(page.getByTestId('fixed-hardware')).toBeVisible() // fixed topology: nothing to add
+
   // A puzzle no other test saves a solution for, so it starts unconnected.
   await openPuzzle(page, 'distributed-polynomial')
   const edges = page.locator('.react-flow__edge')
@@ -149,4 +152,61 @@ test('export and re-import solution YAML', async ({ page }) => {
   await (await chooser).setFiles({ name: 'x.yaml', mimeType: 'text/yaml', buffer: Buffer.from(yaml.replace('ADD ACC', 'ADD ACC\n    NOP')) })
   await expect(page.locator('.monaco-editor .view-lines')).toContainText('NOP')
   await expect(page.getByTestId('dirty-indicator')).toBeVisible()
+})
+
+test('design hardware: add a processor and a passive stack, configure, wire, pass and get scored', async ({ page, request }) => {
+  await openPuzzle(page, 'stack-reverse')
+  const palette = page.getByTestId('hardware-palette')
+  await expect(palette).toContainText('requires at least 1 stack') // backend constraint, before anything runs
+  // Add from the sidebar palette and from the graph toolbar's menu.
+  await page.getByTestId('palette-stack').getByRole('button', { name: '+ Add' }).click()
+  await page.getByTestId('add-hardware').click()
+  await expect(page.getByTestId('add-stack')).toBeDisabled() // the puzzle allows one stack
+  await page.getByTestId('add-standard').click()
+  await expect(page.getByTestId('cell-stack1')).toBeVisible()
+  await expect(page.getByTestId('cell-cpu1')).toBeVisible()
+  await expect(page.getByTestId('budget-cost')).toContainText('33 / 50')
+  await expect(palette).not.toContainText('requires at least')
+
+  // Configure the stack in the editor pane (it has no code): two ports, capacity 9.
+  await page.getByTestId('cell-stack1').click()
+  const config = page.getByTestId('hardware-config')
+  await config.getByTestId('node-ports').getByRole('button', { name: 'decrease' }).click()
+  await config.getByTestId('node-ports').getByRole('button', { name: 'decrease' }).click()
+  await expect(page.getByTestId('cell-stack1').locator('[data-port]')).toHaveCount(2)
+  await expect(port(page, 'stack1', 'P1')).toHaveAttribute('data-function', 'POP')
+  await config.getByTestId('node-config-capacity').getByRole('button', { name: 'increase' }).click()
+  await expect(page.getByTestId('cost-stack1')).toHaveText('¤10')
+
+  await page.getByRole('button', { name: 'Fit', exact: true }).click()
+  await waitForStableViewport(page)
+  const edges = page.locator('.react-flow__edge')
+  // An input stream and a POP port both only send: refused.
+  await drag(page, port(page, 'in', 'P0'), port(page, 'stack1', 'P1'))
+  await expect(edges).toHaveCount(0)
+  await drag(page, port(page, 'in', 'P0'), port(page, 'cpu1', 'P0'))
+  await drag(page, port(page, 'cpu1', 'P1'), port(page, 'stack1', 'P0'))
+  await drag(page, port(page, 'stack1', 'P1'), port(page, 'cpu1', 'P2'))
+  await drag(page, port(page, 'cpu1', 'P3'), port(page, 'out', 'P0'))
+  await expect(edges).toHaveCount(4)
+
+  await page.getByTestId('cell-cpu1').click()
+  await typeProgram(page, ['MOV 0, P1', 'read: MOV P0, ACC', 'JEZ flush', 'MOV ACC, P1', 'JMP read', 'flush: MOV P2, ACC', 'JEZ done', 'MOV ACC, P3', 'JMP flush', 'done: MOV 0, P3'])
+  await expect(page.getByTestId('memory-value')).toHaveText('26 / 32 bytes')
+
+  await page.getByTestId('run-tests').click()
+  await expect(page.getByTestId('tests-summary')).toHaveText('3/3 passed')
+  // The server re-ran the solution and recorded independent personal bests.
+  await expect(page.getByTestId('score-cost')).toContainText('¤32')
+  await expect(page.getByTestId('score-ticks')).toContainText('92')
+  await expect(page.getByTestId('score-bytes')).toContainText('26')
+  await expect(page.getByTestId('score-cost')).toContainText('new best')
+  const bests = await (await request.get('/api/puzzles/stack-reverse/scores')).json()
+  expect(bests.bests.cost.score).toEqual({ cost: 32, ticks: 92, bytes: 26 })
+
+  // Removing a node removes its wires too.
+  await page.getByTestId('cell-stack1').click()
+  await page.getByTestId('hardware-config').getByRole('button', { name: 'Remove stack1' }).click()
+  await expect(page.getByTestId('cell-stack1')).toHaveCount(0)
+  await expect(edges).toHaveCount(2)
 })

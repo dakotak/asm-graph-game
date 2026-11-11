@@ -24,11 +24,16 @@ type CellBlueprint struct {
 	Type         string
 	Arch         cell.Architecture
 	Spec         cell.Spec
+	Hardware     cell.HardwareSpec
 	Programmable bool
-	Source       string
-	Program      *vm.Program      // nil for non-programmable cells
-	Code         []vm.Instruction // decoded program
-	SourceLines  []int            // source line per instruction
+	// Player is true for hardware the player instantiated (as opposed to
+	// the puzzle's fixed cells); only player hardware has a cost.
+	Player      bool
+	Cost        int
+	Source      string
+	Program     *vm.Program      // nil for non-programmable cells
+	Code        []vm.Instruction // decoded program
+	SourceLines []int            // source line per instruction
 }
 
 // Blueprint is a validated puzzle + solution with compiled programs. It is
@@ -38,6 +43,8 @@ type Blueprint struct {
 	Solution *solution.Solution
 	Topology *graph.Topology
 	Cells    []*CellBlueprint
+	// Hardware is the player's hardware and its cost.
+	Hardware solution.HardwareReport
 }
 
 // Prepare validates the puzzle and solution, builds the topology, and
@@ -48,23 +55,34 @@ func Prepare(reg *cell.Registry, p *puzzle.Puzzle, s *solution.Solution) (*Bluep
 		return nil, l
 	}
 	l := s.Validate(p, reg)
-	topo, _ := s.Topology(p)
-	bp := &Blueprint{Puzzle: p, Solution: s, Topology: topo}
-	for i := range p.Cells {
-		c := &p.Cells[i]
-		arch, _ := reg.Lookup(c.Type)
+	if l.HasErrors() {
+		// Topology and compilation need a structurally valid solution, but
+		// keep going far enough to also report assembly errors.
+		if hasCode(l, "solution.hardware") {
+			return nil, s.Annotate(l)
+		}
+	}
+	topo, _ := s.Topology(p, reg)
+	rep := s.Report(p, reg)
+	bp := &Blueprint{Puzzle: p, Solution: s, Topology: topo, Hardware: rep}
+	costs := map[string]int{}
+	for _, n := range rep.Nodes {
+		costs[n.ID] = n.Cost
+	}
+	for i, spec := range s.Specs(p, reg) {
+		arch, _ := reg.Lookup(spec.Type)
 		cb := &CellBlueprint{
-			Index: i, ID: c.ID, Type: c.Type, Arch: arch,
-			Spec: cell.Spec{ID: c.ID, Type: c.Type, ProgramMemory: c.ProgramMemory, Ports: c.EnabledPorts(), Config: c.Config},
+			Index: i, ID: spec.ID, Type: spec.Type, Arch: arch, Spec: spec,
+			Hardware: cell.HardwareOf(arch), Player: i >= len(p.Cells), Cost: costs[spec.ID],
 		}
 		if isa := arch.ISA(); isa != nil {
 			cb.Programmable = true
-			cb.Source = s.Programs[c.ID]
-			res, errs := asm.Compile(cb.Source, isa, asm.Options{MemoryLimit: c.ProgramMemory})
+			cb.Source = s.Programs[spec.ID]
+			res, errs := asm.Compile(cb.Source, isa, asm.Options{MemoryLimit: spec.ProgramMemory, Ports: spec.PortCount})
 			for _, e := range errs {
 				code := "asm.error"
 				l = append(l, diag.Diagnostic{
-					Severity: diag.Error, Code: code, Cell: c.ID, Path: "programs." + c.ID,
+					Severity: diag.Error, Code: code, Cell: spec.ID, Path: "programs." + spec.ID,
 					SourceLine: e.Pos.Line, SourceColumn: e.Pos.Column, Message: e.Msg,
 				})
 			}
@@ -81,6 +99,15 @@ func Prepare(reg *cell.Registry, p *puzzle.Puzzle, s *solution.Solution) (*Bluep
 		return nil, l
 	}
 	return bp, l
+}
+
+func hasCode(l diag.List, prefix string) bool {
+	for _, d := range l {
+		if d.Severity == diag.Error && (d.Code == prefix || len(d.Code) > len(prefix) && d.Code[:len(prefix)+1] == prefix+".") {
+			return true
+		}
+	}
+	return false
 }
 
 // ProgramReport describes one compiled program for tooling and frontends.
